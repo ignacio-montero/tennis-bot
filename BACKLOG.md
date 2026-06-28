@@ -72,10 +72,17 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   Deliberately out of scope while hold-and-notify is enough.
 
 ## 7. Deployment / scale
-- 🔵 **Move triggers off the Mac (AWS free tier)** — booking logic is already a
-  portable CLI; only the trigger needs to move (EventBridge→Lambda/Fargate or
-  cron on a micro instance calling `scheduled_run.sh`). Fixes the Mac-must-be-
-  awake reliability gap. *(User intends this next-ish.)*
+- ⏸️ **Move triggers off the Mac — PARKED (decided: home box, not cloud).**
+  Cloud (AWS/Oracle) was considered but rejected for now: a datacenter IP risks
+  Cloudflare/throttling, whereas a home box keeps the residential UK IP (our key
+  anti-bot advantage). Plan: an always-on home machine running cron/systemd
+  timers calling `scheduled_run.sh` (booking logic unchanged).
+  Hardware shortlist (need ≥4GB RAM, 64-bit, SSD; Chromium is RAM-hungry):
+  (a) an old laptop already owned (free, has battery, lid-closed-awake) — best;
+  (b) refurb x86 mini PC — Lenovo ThinkCentre Tiny / Dell OptiPlex Micro / HP
+  EliteDesk Mini, ~£70-120 (recommended buy — x86, SSD, reliable);
+  (c) Raspberry Pi 5/4 8GB + USB SSD, ~£110 (avoid Pi Zero/3/2GB).
+  Until then: Mac must be awake at scheduled times.
 - ⚪ **Dockerise** — package the CLI for the cloud host.
 - ⚪ **Multi-user / multi-account** support.
 
