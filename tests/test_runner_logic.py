@@ -1,0 +1,65 @@
+"""Deterministic tests for slot-selection logic (no network)."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from tennisbot.config import (CourtConfig, Drop, Preference, Surface, Target)
+from tennisbot.models import Slot
+from tennisbot.runner import choose_court_slots
+
+
+def _target(two_hours: bool) -> Target:
+    courts = CourtConfig(
+        group="G", surfaces={"Synth": Surface("Synth", "Synth")},
+        preferred="Synth", enabled=["Synth"], two_hours=two_hours)
+    return Target(key="t", name="T", provider="everyoneactive", site="0",
+                  drop=Drop(7, "21:45", "Europe/London"), max_holds_per_run=2,
+                  courts=courts, want=[Preference("Wed", "18:00")])
+
+
+def _slot(time, court, avail=True):
+    # 2026-07-01 is a Wednesday.
+    return Slot(date="2026-07-01", time=time, court=court,
+                available=avail, selector=f"#{court}-{time}")
+
+
+def test_single_hour_picks_preferred_time():
+    slots = [_slot("18:00", "Court 1"), _slot("19:00", "Court 2")]
+    chosen = choose_court_slots(slots, _target(False), want_time=None)
+    assert len(chosen) == 1 and chosen[0].time == "18:00"
+
+
+def test_two_hours_same_court():
+    slots = [_slot("18:00", "Court 1"), _slot("19:00", "Court 1"),
+             _slot("19:00", "Court 2")]
+    chosen = choose_court_slots(slots, _target(True), want_time=None)
+    assert [s.time for s in chosen] == ["18:00", "19:00"]
+    assert chosen[0].court == chosen[1].court == "Court 1"
+
+
+def test_two_hours_falls_back_to_single_when_no_adjacent():
+    # 18:00 exists but no 19:00 on the SAME court -> book single hour.
+    slots = [_slot("18:00", "Court 1"), _slot("19:00", "Court 2")]
+    chosen = choose_court_slots(slots, _target(True), want_time=None)
+    assert len(chosen) == 1 and chosen[0].time == "18:00"
+
+
+def test_two_hours_requires_same_court_not_cross_court():
+    # 18:00 on Court 1, 19:00 only on Court 2 -> must NOT pair across courts.
+    slots = [_slot("18:00", "Court 1"), _slot("19:00", "Court 2")]
+    chosen = choose_court_slots(slots, _target(True), want_time=None)
+    assert not (len(chosen) == 2)
+
+
+def test_want_time_override():
+    slots = [_slot("20:00", "Court 5")]
+    chosen = choose_court_slots(slots, _target(False), want_time="20:00")
+    assert len(chosen) == 1 and chosen[0].time == "20:00"
+
+
+def test_no_match_returns_empty():
+    slots = [_slot("08:00", "Court 1", avail=True)]
+    chosen = choose_court_slots(slots, _target(False), want_time=None)
+    assert chosen == []

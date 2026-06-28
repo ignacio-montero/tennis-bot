@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DISABLED until the exact drop time is confirmed by the watcher.
+     To enable:
+       1. Confirm the drop time from logs/dropwatch-*.log.
+       2. Set targets.yaml drop.local_time to that time (the spin-wait fire time).
+       3. Set the Minute/Hour below to ~4 min BEFORE the drop (launch + pre-warm).
+       4. Rename to remove .DISABLED, then:
+          cp deploy/launchd/com.tennisbot.court-drop.plist ~/Library/LaunchAgents/
+          launchctl load -w ~/Library/LaunchAgents/com.tennisbot.court-drop.plist
+     (Placeholder below assumes a 21:45 drop -> launch 21:41.) -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tennisbot.court-drop</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__PROJECT_DIR__/scripts/scheduled_drop.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>21</integer>
+        <key>Minute</key><integer>41</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__PROJECT_DIR__/logs/launchd-court-drop.log</string>
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_DIR__/logs/launchd-court-drop.log</string>
+</dict>
+</plist>

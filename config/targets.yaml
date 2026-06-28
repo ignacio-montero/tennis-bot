@@ -1,0 +1,56 @@
+# Booking targets. The bot ONLY pursues slots matching a preference below —
+# it never books "whatever is available". One hold per run (max_holds_per_run),
+# except two_hours mode which may hold 2 consecutive hours on the same court.
+#
+# Surfaces/activities are matched by the Connect results-row NAME (`match`).
+# Find codes/names for any centre with: python -m tennisbot discover --centre NAME
+
+paddington:
+  name: "Paddington Recreation Ground"
+  provider: everyoneactive
+  site: "0156"
+  drop: {days_before: 7, local_time: "21:45", timezone: "Europe/London"}
+  max_holds_per_run: 1
+
+  courts:
+    group: "156COURTS"
+    surfaces:
+      - {label: Synth,  match: "Tennis - Synth"}
+      - {label: Tarmac, match: "Tennis - Tarmac"}
+    preferred: Synth
+    enabled: [Synth, Tarmac]
+    two_hours: false          # set true to grab two consecutive hours, same court
+
+  activities:
+    group: "156ADULT"
+    items:
+      # NOTE: "Tennis (adv) Wed 1300" does not exist — only Wed 1900.
+      - {label: "Tennis adv Sun 1300", match: "Tennis (adv) Sun 1300", day: Sun, time: "13:00"}
+      - {label: "Tennis adv Wed 1900", match: "Tennis (adv) Wed 1900", day: Wed, time: "19:00"}
+    enabled: ["Tennis adv Sun 1300", "Tennis adv Wed 1900"]
+
+  want:
+    - {day: Sat, time: "18:00"}
+    - {day: Sat, time: "19:00"}
+    - {day: Sun, time: "18:00"}
+
+westway:
+  name: "Westway Sports & Fitness Centre"
+  provider: everyoneactive
+  site: "0162"
+  drop: {days_before: 7, local_time: "21:45", timezone: "Europe/London"}
+  max_holds_per_run: 1
+
+  courts:
+    group: "162TENNIS"
+    surfaces:
+      - {label: Outdoor,           match: "Outdoor Tennis"}
+      - {label: Indoor,            match: "Indoor Tennis (50"}
+      - {label: "Indoor EarlyBird", match: "Indoor Tennis Early Bird"}
+    preferred: Outdoor
+    enabled: [Outdoor]          # Indoor / EarlyBird supported but not enabled (per request)
+    two_hours: false
+
+  want:
+    - {day: Sat, time: "18:00"}
+    - {day: Sun, time: "18:00"}

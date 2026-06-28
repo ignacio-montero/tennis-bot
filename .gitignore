@@ -1,0 +1,45 @@
+# ─── Secrets & captured traffic (NEVER commit) ───────────────────────────────
+# HAR files contain cookies, auth tokens, and anything typed into forms.
+*.har
+recon/*.har
+recon/**/*.har
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# Parser output may echo URLs/headers — keep it local until reviewed.
+recon/out/
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Screenshots may contain personal booking details.
+screenshots/
+
+# Persisted login session (cookies/tokens).
+.session/
+
+# ─── State / runtime ─────────────────────────────────────────────────────────
+*.sqlite
+*.sqlite3
+*.db
+logs/
+*.log
+
+# ─── Claude Code local settings (can contain approved commands w/ secrets) ────
+.claude/settings.local.json
+
+# ─── OS / editor ─────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
