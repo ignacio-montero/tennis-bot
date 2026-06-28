@@ -28,8 +28,9 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   (search→parse→click). If the drop is contested, optimise: pre-warm the search
   page (pre-select site/group/surface so only date+submit remain at T-0), or
   replay the reserve postback via raw httpx with harvested cookies.
-- 🔵 **Confirm exact drop time** (21:45 vs 22:00) via a "watch" mode that polls
-  availability around the window and logs when slots actually appear.
+- ⏳ **Confirm exact drop time** (21:45 vs 22:00) — watcher built + scheduled
+  nightly (`com.tennisbot.dropwatch` @ 21:25). Awaiting first night's
+  `logs/dropwatch-*.log`, then enable the court-drop job.
 - ⚪ **Self-recovery / retries** — if a run fails near the drop, retry within a
   bounded deadline; alert on give-up.
 
@@ -94,9 +95,12 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   Combine with #4/#5 for fully hands-off, schedule-aware booking.
 
 ## 9. Housekeeping
-- 🔵 **Rotate secrets** — Telegram bot token + EA password (shared in plaintext
-  during setup). Do before "production".
-- ⚪ **Tests** — provider parsing unit tests, mocked flows.
+- 🟡 **Rotate secrets** — Telegram token ✅ rotated; **<removed>**
+  (<removed>).
+- ✅ **Published to GitHub** — private repo `ignacio-montero/tennis-bot` (branch
+  `main`), secrets verified excluded, README + LICENSE + genericized paths.
+- ⚪ **Tests** — more provider-parsing unit tests, mocked flows (have: selection
+  logic + clock timing).
 
 ---
 
