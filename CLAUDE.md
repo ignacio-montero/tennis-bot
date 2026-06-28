@@ -138,4 +138,9 @@ Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
 - Python venv at `.venv`; deps in `requirements.txt`; Playwright Chromium installed.
 - `structlog` logging. Screenshots in `screenshots/`, session in `.session/`
   (both gitignored). Temp/experimental scripts go in the session scratchpad.
-- Not a git repo yet. Recon `*.har` files are gitignored (contain secrets).
+- **Git:** private GitHub repo `ignacio-montero/tennis-bot`, branch `main`.
+  Secrets live in gitignored `.env`; also gitignored: `*.har`, `.session/`,
+  `screenshots/`, `logs/`, `.claude/settings.local.json`. **Always re-run the
+  staged-secret scan before pushing** (`git ls-files -z | xargs -0 grep -l ...`).
+  launchd plists are committed as `__PROJECT_DIR__` templates, rendered by
+  `install_schedule.sh` at install time (no hardcoded home paths in the repo).
