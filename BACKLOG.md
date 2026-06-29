@@ -87,6 +87,11 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   `deploy/README.md` runbook (self-hosting / DevOps showcase).
   Ops gotchas (Windows): never-sleep/AC/lid-nothing, auto-restart on power loss,
   run tasks without login, defer Update reboots. Until host exists: Mac must be awake.
+- 🔵 **Remote access / self-hosting (part of the home-server plan).** Reach the
+  laptop from the Mac over the internet via a **mesh VPN — Tailscale** (free,
+  WireGuard, **no router ports opened**), then **SSH** for admin (Linux) and
+  optional **RDP/VNC over Tailscale** for GUI. Rule: never port-forward SSH/RDP
+  to the open internet. Later: Cloudflare Tunnel if a service needs public access.
 - ⚪ **Hardware fallback if the laptop doesn't work out:** refurb x86 mini PC
   (~£70-120) or Raspberry Pi 5/4 8GB + SSD.
 - ⚪ **Dockerise** — package the CLI for the cloud host.
