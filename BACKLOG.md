@@ -72,17 +72,23 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   Deliberately out of scope while hold-and-notify is enough.
 
 ## 7. Deployment / scale
-- ⏸️ **Move triggers off the Mac — PARKED (decided: home box, not cloud).**
-  Cloud (AWS/Oracle) was considered but rejected for now: a datacenter IP risks
-  Cloudflare/throttling, whereas a home box keeps the residential UK IP (our key
-  anti-bot advantage). Plan: an always-on home machine running cron/systemd
-  timers calling `scheduled_run.sh` (booking logic unchanged).
-  Hardware shortlist (need ≥4GB RAM, 64-bit, SSD; Chromium is RAM-hungry):
-  (a) an old laptop already owned (free, has battery, lid-closed-awake) — best;
-  (b) refurb x86 mini PC — Lenovo ThinkCentre Tiny / Dell OptiPlex Micro / HP
-  EliteDesk Mini, ~£70-120 (recommended buy — x86, SSD, reliable);
-  (c) Raspberry Pi 5/4 8GB + USB SSD, ~£110 (avoid Pi Zero/3/2GB).
-  Until then: Mac must be awake at scheduled times.
+- 🔵 **Host on the old Windows laptop (home server) — NEXT (when ready).**
+  User has an unused Windows laptop → use it as an always-on host (keeps the
+  residential UK IP = anti-bot advantage; cloud/datacenter rejected for that
+  reason). Also intended to host future projects.
+  **Plan: containerize with Docker** (base `mcr.microsoft.com/playwright/python`;
+  mount `.env`/`.session/`/`logs/` as volumes — secrets never in the image;
+  `TZ=Europe/London`). Trigger = our existing thin layer: cron / Windows Task
+  Scheduler runs `docker run … tennisbot run-now|drop` (booking logic unchanged).
+  Host options: **(C)** keep Windows → Docker Desktop (WSL2) + Task Scheduler;
+  **(D, preferred)** wipe → Ubuntu Server + Docker + cron (most robust, best
+  portfolio). To decide: laptop RAM (≥8GB ideal) + Win version; keep-Windows vs Linux.
+  Portfolio artifact: `deploy/docker/Dockerfile` + `docker-compose.yml` +
+  `deploy/README.md` runbook (self-hosting / DevOps showcase).
+  Ops gotchas (Windows): never-sleep/AC/lid-nothing, auto-restart on power loss,
+  run tasks without login, defer Update reboots. Until host exists: Mac must be awake.
+- ⚪ **Hardware fallback if the laptop doesn't work out:** refurb x86 mini PC
+  (~£70-120) or Raspberry Pi 5/4 8GB + SSD.
 - ⚪ **Dockerise** — package the CLI for the cloud host.
 - ⚪ **Multi-user / multi-account** support.
 
