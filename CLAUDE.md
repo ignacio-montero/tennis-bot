@@ -117,9 +117,12 @@ Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
   via the `Date` header — we fire on *their* clock), **spin-waits** to the drop
   instant (sub-ms accuracy verified), then runs the court flow. `--time HH:MM`
   overrides the fire time for testing; `--live` to book. Dry-run pipeline verified.
-- **Drop time still unconfirmed (21:45 vs 22:00).** A read-only **watcher**
-  (`tennisbot watch`, launchd `com.tennisbot.dropwatch` @ 21:25 nightly) polls
-  today+7 and today+8 and logs when slots first appear → `logs/dropwatch-*.log`.
+- **Drop time: EARLIER than ~21:25 (the old 21:45 guess was WRONG).** Watcher on
+  2026-06-29 found today+7 already OPEN at 21:25 and today+8 still closed →
+  **offset = 7 days confirmed**, but the release happens *before* 21:25; exact
+  time still TBD. The watcher (`tennisbot watch`, launchd `com.tennisbot.dropwatch`)
+  now watches only today+7 and ignores flaky "full" reads (needs a sustained-closed
+  baseline) → `logs/dropwatch-*.log`. **Must start earlier to catch the transition.**
 - **court-drop launchd job is DISABLED** (`deploy/launchd/com.tennisbot.court-drop.plist.DISABLED`).
   To enable after confirming: set `targets.yaml drop.local_time`, set the plist
   launch time to ~4 min before, rename (drop `.DISABLED`), `launchctl load -w`.
