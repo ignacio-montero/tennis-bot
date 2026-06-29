@@ -92,6 +92,10 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   WireGuard, **no router ports opened**), then **SSH** for admin (Linux) and
   optional **RDP/VNC over Tailscale** for GUI. Rule: never port-forward SSH/RDP
   to the open internet. Later: Cloudflare Tunnel if a service needs public access.
+  **Ops/deploy loop:** code in git → edit on Mac → push → `ssh laptop 'git pull
+  && docker compose up -d --build'`. Claude Code (on the Mac) can drive all of
+  this over SSH (needs key-based auth; Edit/Write are local so deploy via
+  git/rsync, or SSHFS-mount the remote FS to edit it as if local).
 - ⚪ **Hardware fallback if the laptop doesn't work out:** refurb x86 mini PC
   (~£70-120) or Raspberry Pi 5/4 8GB + SSD.
 - ⚪ **Dockerise** — package the CLI for the cloud host.
