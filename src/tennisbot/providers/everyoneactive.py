@@ -115,9 +115,14 @@ class EveryoneActiveProvider:
             log.info("connect.mrmlogin")
             page.fill("#ctl00_MainContent_InputLogin", self.secrets.ea_email)
             page.fill("#ctl00_MainContent_InputPassword", self.secrets.ea_password)
-            page.click("#ctl00_MainContent_btnLogin")
-            page.wait_for_load_state("networkidle", timeout=60000)
-            page.wait_for_timeout(1500)
+            # Submit via JS so Playwright doesn't block on the navigation auto-wait
+            # (that wait intermittently timed out and crashed scheduled runs).
+            page.eval_on_selector("#ctl00_MainContent_btnLogin", "el => el.click()")
+            try:
+                page.wait_for_url("**/memberHomePage.aspx", timeout=45000)
+            except Exception:
+                page.wait_for_load_state("networkidle", timeout=30000)
+            page.wait_for_timeout(1000)
             if "memberHomePage" not in page.url:
                 page.goto(self.HOME_URL, wait_until="networkidle", timeout=60000)
                 page.wait_for_timeout(1000)
