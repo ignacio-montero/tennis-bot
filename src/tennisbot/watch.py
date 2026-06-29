@@ -41,12 +41,15 @@ def watch_drop(target_key: str = "paddington", dates: list[str] | None = None,
     secrets = Secrets.from_env()
     target = load_targets()[target_key]
     if not dates:
-        today = dt.date.today()
-        dates = [(today + dt.timedelta(days=n)).isoformat() for n in (7, 8)]
+        # Only today+7 actually drops tonight (offset confirmed = 7).
+        dates = [(dt.date.today() + dt.timedelta(days=7)).isoformat()]
     surface = (target.courts.surfaces[surface_label] if surface_label
                else target.courts.ordered()[0])
     end_h, end_m = (int(x) for x in until.split(":"))
-    dropped: set[str] = set()
+    dropped: set[str] = set()           # confirmed real drop transitions
+    open_at_start: set[str] = set()     # already open before we started (too late)
+    closed_streak: dict[str, int] = {}  # consecutive reliable-closed reads per date
+    REQUIRE_CLOSED = 5                   # sustained-closed baseline before a drop counts
 
     log.info("watch.start", dates=dates, surface=surface.label,
              poll_secs=poll_secs, until=until)
@@ -78,11 +81,24 @@ def watch_drop(target_key: str = "paddington", dates: list[str] | None = None,
                 stamp = now.strftime("%H:%M:%S")
                 log.info("watch.poll", t=stamp, date=date,
                          surface=surface.label, avail=avail, status=status)
-                if date not in dropped and avail > 0:
-                    dropped.add(date)
-                    log.warning("watch.DROP_DETECTED",
-                                t=now.strftime("%H:%M:%S.%f"), date=date,
-                                surface=surface.label, avail=avail)
+                # Detection (flaky reads handled): "open" (avail>0) is reliable;
+                # a *real drop* only counts after a sustained-closed baseline.
+                # Open before that baseline = we started too late.
+                if avail > 0:
+                    if date not in dropped and date not in open_at_start:
+                        if closed_streak.get(date, 0) >= REQUIRE_CLOSED:
+                            dropped.add(date)
+                            log.warning("watch.DROP_DETECTED",
+                                        t=now.strftime("%H:%M:%S.%f"), date=date,
+                                        surface=surface.label, avail=avail)
+                        else:
+                            open_at_start.add(date)
+                            log.warning("watch.ALREADY_OPEN_AT_START — start earlier",
+                                        t=stamp, date=date, avail=avail)
+                    closed_streak[date] = 0
+                elif status in ("row_full", "row_missing"):  # reliable-closed read
+                    closed_streak[date] = closed_streak.get(date, 0) + 1
+                # error reads (-2) leave the streak unchanged
             time.sleep(poll_secs)
         browser.close()
     log.info("watch.done", dropped=sorted(dropped))
