@@ -10,13 +10,13 @@
         <string>/bin/bash</string>
         <string>__PROJECT_DIR__/scripts/watch_run.sh</string>
     </array>
-    <!-- Every night 20:40 — read-only watch to pinpoint the court drop time
-         (suspected ~21:15; 20:40 start gives a closed baseline before it).
-         TEMPORARY: remove once the drop time is confirmed. -->
+    <!-- Every night 19:00–22:00 — read-only watch of BOTH boundary dates
+         (today+7 and today+8) to settle the offset (7 vs 8 days) and pin the
+         drop time. TEMPORARY: remove once confirmed. -->
     <key>StartCalendarInterval</key>
     <dict>
-        <key>Hour</key><integer>20</integer>
-        <key>Minute</key><integer>40</integer>
+        <key>Hour</key><integer>19</integer>
+        <key>Minute</key><integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
     <string>__PROJECT_DIR__/logs/launchd-dropwatch.log</string>

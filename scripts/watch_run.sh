@@ -7,6 +7,6 @@ cd "$PROJECT_DIR" || exit 1
 mkdir -p logs
 LOG="logs/dropwatch-$(date +%Y%m%d).log"
 echo "===== $(date '+%Y-%m-%d %H:%M:%S %Z') watch start =====" >> "$LOG"
-PYTHONPATH=src ".venv/bin/python" -m tennisbot watch --poll 5 --until 21:45 \
+PYTHONPATH=src ".venv/bin/python" -m tennisbot watch --poll 5 --until 22:00 \
     >> "$LOG" 2>&1
 echo "===== $(date '+%Y-%m-%d %H:%M:%S %Z') watch end =====" >> "$LOG"

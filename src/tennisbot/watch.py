@@ -41,8 +41,12 @@ def watch_drop(target_key: str = "paddington", dates: list[str] | None = None,
     secrets = Secrets.from_env()
     target = load_targets()[target_key]
     if not dates:
-        # Only today+7 actually drops tonight (offset confirmed = 7).
-        dates = [(dt.date.today() + dt.timedelta(days=7)).isoformat()]
+        # Watch BOTH boundary dates so an off-by-one can't fool us:
+        #   today+7 → opens tonight if the window is 7 days;
+        #   today+8 → should stay closed unless the window is really 8 days.
+        # Whichever flips closed→open (and when) settles offset AND drop time.
+        today = dt.date.today()
+        dates = [(today + dt.timedelta(days=n)).isoformat() for n in (7, 8)]
     surface = (target.courts.surfaces[surface_label] if surface_label
                else target.courts.ordered()[0])
     end_h, end_m = (int(x) for x in until.split(":"))
