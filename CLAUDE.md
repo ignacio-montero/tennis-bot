@@ -122,10 +122,14 @@ Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
   So today+8 does NOT open the evening before — it's a clean 7-day rolling window.
 - **Drop TIME still unknown but EARLIER than 19:00** (today+7 already open at 19:00
   every night we've watched). Leading hypothesis: **midnight (00:00)** roll-over.
-  Next test: a morning read of today+7 — open in the morning ⇒ midnight; still
-  closed ⇒ afternoon/evening (then watch it flip). Watcher (`tennisbot watch`,
-  launchd `com.tennisbot.dropwatch`) watches today+7 & today+8, ignores flaky
-  "full" reads (sustained-closed baseline) → `logs/dropwatch-*.log`.
+- ⏸️ **Watcher PAUSED (dropwatch launchd removed) 2026-07-01.** The 3-hour watcher
+  **collided** with the Wed 19:00 activity job (two concurrent sessions on the same
+  account) and the 20:30 backup then failed ("page won't load" — booking app went
+  sluggish for the account). Only the **4 activity jobs remain active**. Repo
+  template kept (`deploy/launchd/com.tennisbot.dropwatch.plist`).
+- **When resuming the drop-time hunt:** run gently (short window, avoid overlapping
+  the Wed 19:00/20:30 & Sun 13:00/14:30 activity-job times — never stack sessions
+  on the account). Next test idea: a single morning read of today+7 (open ⇒ midnight).
 - **court-drop launchd job is DISABLED** (`deploy/launchd/com.tennisbot.court-drop.plist.DISABLED`).
   To enable after confirming: set `targets.yaml drop.local_time`, set the plist
   launch time to ~4 min before, rename (drop `.DISABLED`), `launchctl load -w`.
