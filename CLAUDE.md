@@ -117,12 +117,15 @@ Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
   via the `Date` header — we fire on *their* clock), **spin-waits** to the drop
   instant (sub-ms accuracy verified), then runs the court flow. `--time HH:MM`
   overrides the fire time for testing; `--live` to book. Dry-run pipeline verified.
-- **Drop time: EARLIER than ~21:25 (the old 21:45 guess was WRONG).** Watcher on
-  2026-06-29 found today+7 already OPEN at 21:25 and today+8 still closed →
-  **offset = 7 days confirmed**, but the release happens *before* 21:25; exact
-  time still TBD. The watcher (`tennisbot watch`, launchd `com.tennisbot.dropwatch`)
-  now watches only today+7 and ignores flaky "full" reads (needs a sustained-closed
-  baseline) → `logs/dropwatch-*.log`. **Must start earlier to catch the transition.**
+- **Window = 7 days (confirmed by direct observation 2026-07-01):** watched today+7
+  (07-08, open, 32 slots) vs today+8 (07-09, never >0 all evening incl. ~21:00).
+  So today+8 does NOT open the evening before — it's a clean 7-day rolling window.
+- **Drop TIME still unknown but EARLIER than 19:00** (today+7 already open at 19:00
+  every night we've watched). Leading hypothesis: **midnight (00:00)** roll-over.
+  Next test: a morning read of today+7 — open in the morning ⇒ midnight; still
+  closed ⇒ afternoon/evening (then watch it flip). Watcher (`tennisbot watch`,
+  launchd `com.tennisbot.dropwatch`) watches today+7 & today+8, ignores flaky
+  "full" reads (sustained-closed baseline) → `logs/dropwatch-*.log`.
 - **court-drop launchd job is DISABLED** (`deploy/launchd/com.tennisbot.court-drop.plist.DISABLED`).
   To enable after confirming: set `targets.yaml drop.local_time`, set the plist
   launch time to ~4 min before, rename (drop `.DISABLED`), `launchctl load -w`.
