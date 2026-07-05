@@ -120,8 +120,24 @@ Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
 - **Window = 7 days (confirmed by direct observation 2026-07-01):** watched today+7
   (07-08, open, 32 slots) vs today+8 (07-09, never >0 all evening incl. ~21:00).
   So today+8 does NOT open the evening before — it's a clean 7-day rolling window.
-- **Drop TIME still unknown but EARLIER than 19:00** (today+7 already open at 19:00
-  every night we've watched). Leading hypothesis: **midnight (00:00)** roll-over.
+- ⚠️ **`row_full` IS AMBIGUOUS** — it means "results row shows Full", which is BOTH
+  "date not released yet" AND "released but every slot already booked". This
+  confounds all watcher interpretation. A date reading `avail>0` = definitely open
+  (reliable); `row_full` could be either state.
+- **Drop TIME — best current theory: EVENING ~21:50, sells out fast.** 2026-07-05
+  (Sun): today+7 (07-12) read `row_full` at 21:20, then the site hit a
+  **thundering-herd error-block 21:49–22:02** (unreadable for everyone incl. the
+  user) — classic drop-time overload. So the drop is likely ~21:50 and popular
+  (esp. weekend) slots sell out within minutes. This supersedes the earlier
+  "before 19:00 / midnight" guess, which was likely the `row_full` ambiguity
+  (weekday today+7 not-yet-full at 19:00 vs weekend sold-out). **Still not 100%
+  pinned** — confirm via the error-block ONSET time (easier than catching the flip).
+- **`drop` is now overload-resilient:** after the spin-wait it **camps** —
+  retries through overload/timeouts and "not-dropped-yet" until it books or
+  `--retry-window` (90s default) elapses; `--retry-gap` between tries. Playwright
+  path (raw-httpx replay is fragile for this WebForms site — possible later v2).
+  `drop.local_time` = **22:00 placeholder** (set a touch before the real drop so
+  the camp window covers it). **Not yet live-verified** (EA site was down when built).
 - ⏸️ **Watcher PAUSED (dropwatch launchd removed) 2026-07-01.** The 3-hour watcher
   **collided** with the Wed 19:00 activity job (two concurrent sessions on the same
   account) and the 20:30 backup then failed ("page won't load" — booking app went

@@ -235,10 +235,13 @@ def _run_activity(page, ctx, prov, target, target_date, dry_run, activity_label,
 def run_drop(target_key: str = "paddington", dry_run: bool = True,
              headless: bool = True, want_time: str | None = None,
              time_override: str | None = None, notify: bool = True,
-             epsilon: float = 0.15) -> RunResult:
-    """Pre-warm a session, spin-wait to the server-clock drop instant, then fire
-    the court booking. Targets the date that releases at the drop (today + days_before).
+             epsilon: float = 0.15, retry_window_s: float = 90.0,
+             retry_gap_s: float = 1.0) -> RunResult:
+    """Pre-warm a session, spin-wait to the server-clock drop instant, then
+    'camp' the booking: retry rapidly through overload / not-yet-dropped until it
+    books or `retry_window_s` elapses. Targets today + days_before.
     """
+    import time as _time
     from . import clock
     secrets = Secrets.from_env()
     target = load_targets()[target_key]
@@ -262,8 +265,50 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
             tg.send(f"⏳ Armed: {target.name} court drop {drop_local} "
                     f"(for {target_date}). Server skew {skew:+.2f}s.")
             clock.wait_until(instant, skew=skew, epsilon=epsilon)
-            return _run_court(page, ctx, prov, target, target_date,
-                              dry_run, want_time, tg)
+
+            # Camp the drop: retry through overload/errors and "not dropped yet"
+            # until we secure a slot or the window closes. Telegram is suppressed
+            # during attempts (via a quiet notifier); we notify once at the end.
+            quiet = _NullTelegram()
+            deadline = _time.time() + retry_window_s
+            attempts = 0
+            result = None
+            while _time.time() < deadline:
+                attempts += 1
+                try:
+                    result = _run_court(page, ctx, prov, target, target_date,
+                                        dry_run, want_time, quiet)
+                except Exception as e:                       # overload / timeout
+                    log.warn("drop.attempt_failed", n=attempts, err=str(e)[:120])
+                    _time.sleep(retry_gap_s)
+                    continue
+                if result.chosen is not None:                # secured / would-book
+                    log.info("drop.secured", attempts=attempts)
+                    break
+                _time.sleep(retry_gap_s)                      # not up yet — retry
+
+            if result is not None and result.chosen is not None:
+                s = result.chosen
+                if dry_run:
+                    tg.send(f"🎾 <b>DRY-RUN drop</b> — {target.name}: would book "
+                            f"{s.time} {s.court} on {target_date} "
+                            f"(after {attempts} attempt(s)).")
+                else:
+                    tg.send(f"🎾✅ <b>HELD (drop)</b> — {target.name}: {s.time} "
+                            f"{s.court} on {target_date} (after {attempts} "
+                            f"attempt(s)).\n💳 Pay in the Everyone Active app.")
+                    if result.screenshot_path:
+                        try:
+                            tg.send_photo(result.screenshot_path,
+                                          caption="Unpaid hold — pay in the app")
+                        except Exception:
+                            pass
+                return result
+
+            tg.send(f"🎾 {target.name} court drop {drop_local}: no slot secured "
+                    f"after {attempts} attempts / {retry_window_s:.0f}s.")
+            return result or RunResult(ok=False, dry_run=dry_run,
+                                       message="no slot after retries")
         except Exception as e:
             log.error("drop.failed", err=str(e))
             try:

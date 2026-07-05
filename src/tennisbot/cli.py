@@ -55,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="Create the hold (default dry-run).")
     dr.add_argument("--epsilon", type=float, default=0.15,
                     help="Seconds after the instant to fire (avoid early reject).")
+    dr.add_argument("--retry-window", type=float, default=90.0,
+                    help="Seconds to keep camping/retrying through overload.")
+    dr.add_argument("--retry-gap", type=float, default=1.0,
+                    help="Seconds between retry attempts.")
     dr.add_argument("--no-notify", action="store_true")
     dr.add_argument("--headed", action="store_true")
 
@@ -81,7 +85,8 @@ def main(argv: list[str] | None = None) -> int:
         res = run_drop(target_key=args.centre, dry_run=not args.live,
                        headless=not args.headed, want_time=args.want_time,
                        time_override=args.time, notify=not args.no_notify,
-                       epsilon=args.epsilon)
+                       epsilon=args.epsilon, retry_window_s=args.retry_window,
+                       retry_gap_s=args.retry_gap)
         print(f"\nRESULT: ok={res.ok} dry_run={res.dry_run} "
               f"chosen={res.chosen} :: {res.message}")
         return 0 if res.ok else 1

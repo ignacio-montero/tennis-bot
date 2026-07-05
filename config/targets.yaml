@@ -9,7 +9,11 @@ paddington:
   name: "Paddington Recreation Ground"
   provider: everyoneactive
   site: "0156"
-  drop: {days_before: 7, local_time: "21:45", timezone: "Europe/London"}
+  # local_time = the instant `drop` spin-waits to, then camps/retries forward.
+  # PLACEHOLDER 22:00 (user request). Evidence 2026-07-05 points to ~21:50
+  # (site error-block onset), so before going live set this a touch BEFORE the
+  # real drop (e.g. 21:48) so the retry window camps through it.
+  drop: {days_before: 7, local_time: "22:00", timezone: "Europe/London"}
   max_holds_per_run: 1
 
   courts:
