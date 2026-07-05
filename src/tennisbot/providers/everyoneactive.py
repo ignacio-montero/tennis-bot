@@ -86,7 +86,7 @@ class EveryoneActiveProvider:
         ]
         for url in authed_pages:
             for attempt in range(2):                 # reload once if SPA empty
-                page.goto(url, wait_until="networkidle", timeout=30000)
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 for _ in range(8):
                     hrefs = page.eval_on_selector_all("a", "els=>els.map(e=>e.href)")
                     land = next((h for h in hrefs
@@ -97,7 +97,7 @@ class EveryoneActiveProvider:
                     if tok:
                         return parse_qs(urlparse(tok).query).get("token", [None])[0]
                     page.wait_for_timeout(1500)
-                page.reload(wait_until="networkidle")
+                page.reload(wait_until="domcontentloaded")
         return None
 
     HOME_URL = "https://book.everyoneactive.com/Connect/memberHomePage.aspx"
@@ -105,8 +105,11 @@ class EveryoneActiveProvider:
     def enter_connect(self, page: Page, ctx=None) -> None:
         log.info("connect.enter")
         # 1) Fast path: a still-valid Connect session loads the search home.
-        page.goto(self.HOME_URL, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(1500)
+        #    Use domcontentloaded (not networkidle) — the Connect app keeps
+        #    background connections open, so networkidle often never settles and
+        #    the 60s wait times out even when the page is perfectly usable.
+        page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(2000)
 
         # 2) Bounced to Connect's own login? Log in there directly (most robust —
         #    no dependency on the flaky Next.js SSO / token harvest).
@@ -124,7 +127,7 @@ class EveryoneActiveProvider:
                 page.wait_for_load_state("networkidle", timeout=30000)
             page.wait_for_timeout(1000)
             if "memberHomePage" not in page.url:
-                page.goto(self.HOME_URL, wait_until="networkidle", timeout=60000)
+                page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=60000)
                 page.wait_for_timeout(1000)
 
         # 3) Last resort: SSO token harvest from the account SPA.
@@ -133,7 +136,7 @@ class EveryoneActiveProvider:
             if not token:
                 raise RuntimeError("Could not enter Connect (MRMLogin + SSO failed)")
             page.goto(f"https://book.everyoneactive.com/connect/landing.aspx?token={token}",
-                      wait_until="networkidle", timeout=60000)
+                      wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(2500)
 
         if "memberHomePage" not in page.url:
@@ -145,8 +148,13 @@ class EveryoneActiveProvider:
 
     # ── advanced-search helpers ───────────────────────────────────────────────
     def _settle(self, page: Page) -> None:
-        page.wait_for_load_state("networkidle", timeout=30000)
-        page.wait_for_timeout(800)
+        # Non-fatal: on this flaky site networkidle often never settles, so cap
+        # it short and swallow the timeout rather than crashing the poll.
+        try:
+            page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass
+        page.wait_for_timeout(1200)
 
     def expand_advanced(self, page: Page) -> None:
         """Expose the Advanced Search controls (site/group/activity dropdowns)."""
@@ -205,7 +213,7 @@ class EveryoneActiveProvider:
     def go_home(self, page: Page) -> None:
         """Return to the Connect search home (to run another search)."""
         page.goto("https://book.everyoneactive.com/Connect/memberHomePage.aspx",
-                  wait_until="networkidle", timeout=60000)
+                  wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(1500)
         if "memberHomePage" not in page.url:
             raise RuntimeError(f"go_home landed off search page: {page.url}")
@@ -336,7 +344,7 @@ class EveryoneActiveProvider:
         import re
         page.goto("https://book.everyoneactive.com/Connect/"
                   "mrmViewMyBookings.aspx?showOption=1",
-                  wait_until="networkidle", timeout=60000)
+                  wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(1500)
         rows = page.evaluate(
             """() => {
