@@ -62,7 +62,12 @@ account login (Next.js/JSON) ──SSO token──▶ Connect WebForms booking e
    click → "Book & Checkout" → unpaid hold ──▶ Telegram notify (pay in app)
 ```
 
-For the full design, decisions, and roadmap see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+For the full design, decisions, and roadmap see
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — plus
+[docs/PRD.md](docs/PRD.md) (goal & scope),
+[docs/DECISIONS.md](docs/DECISIONS.md) (decision log),
+[docs/NEXT_STEPS.md](docs/NEXT_STEPS.md) (current status), and
+[docs/BACKLOG.md](docs/BACKLOG.md) (future ideas).
 
 ## Setup
 

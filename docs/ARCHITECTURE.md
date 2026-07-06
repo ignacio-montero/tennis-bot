@@ -11,8 +11,9 @@
 > courts (Paddington + Westway, surface preference, optional 2 consecutive hours)
 > and activities, **hold-and-notify** (unpaid 1-hour hold → Telegram → user pays
 > in the app; payment/3DS out of scope). **Activity booking is automated** via 4
-> `launchd` jobs (Wed/Sun) with idempotent re-hold. See `CLAUDE.md` for the live
-> operational guide. Park Sports (Hyde/Regent's) still deferred.
+> `launchd` jobs (Wed/Sun) with idempotent re-hold. See `../CLAUDE.md` for the
+> live operational guide and `NEXT_STEPS.md` for current status. Park Sports
+> (Hyde/Regent's) still deferred.
 >
 > **Portable trigger layer:** booking logic is a self-contained CLI; scheduling is
 > a thin trigger (`deploy/launchd` → `scripts/scheduled_run.sh` → CLI). Moving to
@@ -238,7 +239,7 @@ T+...    : NOTIFIER reports result (or escalates SCA to human)
 
 ```
 Tennis-Bot/
-├── ARCHITECTURE.md            # this document
+├── docs/                      # PRD, ARCHITECTURE (this doc), DECISIONS, NEXT_STEPS, BACKLOG
 ├── README.md
 ├── pyproject.toml             # uv / dependencies
 ├── .env.example               # secrets template (no real values)

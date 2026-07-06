@@ -10,29 +10,13 @@ pattern: it secures an *unpaid 1-hour hold* and pings Telegram; the user pays in
 the Everyone Active app. **Payment / 3DS is intentionally out of scope.**
 
 ## Docs map
-- `ARCHITECTURE.md` — design, decisions, connectivity strategy.
+- `docs/NEXT_STEPS.md` — **current status + recommended next steps (read first).**
+- `docs/PRD.md` — goal, scope, success criteria.
+- `docs/ARCHITECTURE.md` — design, connectivity strategy, roadmap.
+- `docs/DECISIONS.md` — decision log with rationale.
+- `docs/BACKLOG.md` — future ideas + status.
 - `recon/FINDINGS.md` — reverse-engineering notes (IDs, flow, surfaces, layouts).
-- `BACKLOG.md` — future ideas + status.
-- `CLAUDE.md` (this file) — current state + how to run + gotchas.
-
-## Current state — WORKING (verified in dry-run) ✅
-Single-shot booking via `run-now`, for **two centres**, **courts + activities**,
-with **surface preference** and **two-consecutive-hours** mode:
-- **Centres:** Paddington (`0156`), Westway Sport & Fitness (`0162`).
-- **Court surfaces** (matched by results-row name): Paddington Synth/Tarmac;
-  Westway Outdoor (Indoor/EarlyBird supported but not enabled). Bot tries
-  enabled surfaces in preference order, skipping full ones.
-- **Activities:** Paddington "Tennis (adv) Sun 1300" / "Wed 1900" (Adult
-  Activities). Land on a class page (`mrmClassStatus.aspx`), parsed separately.
-- **Two consecutive hours, same court:** `courts.two_hours: true`; books both, or
-  the single hour if only one is free (per user's choice). Cap raised to 2 only
-  in this mode. Selection logic unit-tested (`tests/test_runner_logic.py`).
-- **Session persistence** (`.session/`, gitignored) + robust Connect entry.
-
-✅ **Verified LIVE (real hold):** single Paddington court, and **activity booking**
-(Ref 1561842712, Sun 1300). The **2-hour second-hour** live path is coded but only
-dry-run tested — confirm with one `--live` run before relying on it.
-Activity booking is also **scheduled/automated** — see below.
+- `CLAUDE.md` (this file) — how to run + operational gotchas.
 
 ## How to run
 ```bash
@@ -62,6 +46,7 @@ Targets/surfaces/activities are configured in `config/targets.yaml`.
   dry-run vs live, screenshots, Telegram.
 - `discover.py` — `discover` command. `config.py` — typed config. `session.py`
   — storage_state. `notify/telegram.py` — notifications. `cli.py` — entrypoint.
+- `clock.py` — NTP/server-skew + spin-wait. `watch.py` — drop-time finder.
 
 ## Key facts & gotchas (learned the hard way)
 - **Connect entry is 3-tier** (most→least robust): reuse saved Connect session →
@@ -81,14 +66,18 @@ Targets/surfaces/activities are configured in `config/targets.yaml`.
   *available* cells are interactive (parse captures those). **Class page**
   (`mrmClassStatus.aspx`): a "Book" button + "N spaces remaining".
 - ⚠️ **"Tennis (adv) Wed 1300" does not exist** — only Wed 1900 (in config).
+- ⚠️ **`row_full` IS AMBIGUOUS** — it means "results row shows Full", which is
+  BOTH "date not released yet" AND "released but sold out". Beware when
+  interpreting watcher output.
 - **Be polite:** heavy repeated logins throttle the account SPA. Session reuse
-  mitigates this; don't hammer.
-- **Drop time:** ~21:45 local, 7 days ahead — still needs empirical confirmation.
+  mitigates this; don't hammer. **Never stack concurrent sessions on the
+  account** — avoid overlapping the activity-job times (Wed 19:00/20:30, Sun
+  13:00/14:30).
 
 ## Secrets
 `.env` (gitignored): `EA_EMAIL`, `EA_PASSWORD`, `TELEGRAM_BOT_TOKEN`,
-`TELEGRAM_CHAT_ID`. ⚠️ Shared <redacted> — **rotate the Telegram
-<redacted>.**
+`TELEGRAM_CHAT_ID`. Telegram token rotated ✅; ⚠️ **EA password rotation still
+pending** (<removed>).
 
 ## Automation — activity booking (LIVE, scheduled) ✅
 Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
@@ -101,64 +90,24 @@ Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
 
 - All call `scripts/scheduled_run.sh` → `run-now --mode activity --live --days-ahead 7`.
   Activity auto-selected by weekday; **idempotency** skips if already held/paid
-  (checks Manage Bookings) — so the backup only re-holds once the primary's
-  1-hour hold has lapsed.
+  (checks Manage Bookings) — the backup only re-holds once the primary's 1-hour
+  hold has lapsed.
 - **Manage:** `bash scripts/install_schedule.sh` (load/refresh) /
   `bash scripts/uninstall_schedule.sh` (remove). Check: `launchctl list | grep tennisbot`.
 - **Logs:** `logs/activity-YYYYMMDD.log` and `logs/launchd-*.log`.
 - ⚠️ **Mac must be awake** at those times or the job won't fire (it runs at next
   wake). Optional wake schedule via `sudo pmset repeat …` (see install script).
-- **Trigger layer is portable:** to move off the Mac later, point an AWS trigger
-  (EventBridge→Lambda/Fargate, or cron on a micro instance) at the same
-  `scheduled_run.sh` / CLI — no booking-logic changes. Code lives in `deploy/`.
+- **Trigger layer is portable:** to move off the Mac later, point another trigger
+  (cron, Task Scheduler, EventBridge) at the same `scheduled_run.sh` / CLI — no
+  booking-logic changes. Code lives in `deploy/`.
 
-## Daily court-drop scheduler (BUILT — pending drop-time confirmation) ⏳
-- `tennisbot drop` pre-warms a session, measures **server-clock skew** (`clock.py`,
-  via the `Date` header — we fire on *their* clock), **spin-waits** to the drop
-  instant (sub-ms accuracy verified), then runs the court flow. `--time HH:MM`
-  overrides the fire time for testing; `--live` to book. Dry-run pipeline verified.
-- **Window = 7 days (confirmed by direct observation 2026-07-01):** watched today+7
-  (07-08, open, 32 slots) vs today+8 (07-09, never >0 all evening incl. ~21:00).
-  So today+8 does NOT open the evening before — it's a clean 7-day rolling window.
-- ⚠️ **`row_full` IS AMBIGUOUS** — it means "results row shows Full", which is BOTH
-  "date not released yet" AND "released but every slot already booked". This
-  confounds all watcher interpretation. A date reading `avail>0` = definitely open
-  (reliable); `row_full` could be either state.
-- **Drop TIME — best current theory: EVENING ~21:50, sells out fast.** 2026-07-05
-  (Sun): today+7 (07-12) read `row_full` at 21:20, then the site hit a
-  **thundering-herd error-block 21:49–22:02** (unreadable for everyone incl. the
-  user) — classic drop-time overload. So the drop is likely ~21:50 and popular
-  (esp. weekend) slots sell out within minutes. This supersedes the earlier
-  "before 19:00 / midnight" guess, which was likely the `row_full` ambiguity
-  (weekday today+7 not-yet-full at 19:00 vs weekend sold-out). **Still not 100%
-  pinned** — confirm via the error-block ONSET time (easier than catching the flip).
-- **`drop` is now overload-resilient:** after the spin-wait it **camps** —
-  retries through overload/timeouts and "not-dropped-yet" until it books or
-  `--retry-window` (90s default) elapses; `--retry-gap` between tries. Playwright
-  path (raw-httpx replay is fragile for this WebForms site — possible later v2).
-  `drop.local_time` = **22:00 placeholder** (set a touch before the real drop so
-  the camp window covers it). **Not yet live-verified** (EA site was down when built).
-- ⏸️ **Watcher PAUSED (dropwatch launchd removed) 2026-07-01.** The 3-hour watcher
-  **collided** with the Wed 19:00 activity job (two concurrent sessions on the same
-  account) and the 20:30 backup then failed ("page won't load" — booking app went
-  sluggish for the account). Only the **4 activity jobs remain active**. Repo
-  template kept (`deploy/launchd/com.tennisbot.dropwatch.plist`).
-- **When resuming the drop-time hunt:** run gently (short window, avoid overlapping
-  the Wed 19:00/20:30 & Sun 13:00/14:30 activity-job times — never stack sessions
-  on the account). Next test idea: a single morning read of today+7 (open ⇒ midnight).
-- **court-drop launchd job is DISABLED** (`deploy/launchd/com.tennisbot.court-drop.plist.DISABLED`).
-  To enable after confirming: set `targets.yaml drop.local_time`, set the plist
-  launch time to ~4 min before, rename (drop `.DISABLED`), `launchctl load -w`.
-- ⚠️ **Latency caveat:** at T-0 the bot still does search→parse→click (~10-15s) in
-  a real browser. Fine if the drop isn't fiercely contested; tonight's watcher
-  also shows how fast slots deplete. If needed, optimise later (pre-warm search /
-  raw-postback fast path) — see BACKLOG.
-
-## Recommended next steps
-1. **Read `logs/dropwatch-*.log`** to confirm the drop time, then enable the
-   court-drop job (above).
-2. Verify a **2-hour** live booking once (activity live path already verified).
-3. Migrate triggers to **AWS free tier** when ready (logic already portable).
+## Court-drop scheduler — built, disabled pending drop-time confirmation ⏳
+`tennisbot drop` pre-warms a session, measures server-clock skew, spin-waits to
+the drop instant, then camps through overload within `--retry-window` (90s
+default). The launchd job is committed **disabled**
+(`deploy/launchd/com.tennisbot.court-drop.plist.DISABLED`); the drop-time
+watcher is **paused**. Full status, evidence so far, and the enable procedure:
+`docs/NEXT_STEPS.md`.
 
 ## Conventions
 - Python venv at `.venv`; deps in `requirements.txt`; Playwright Chromium installed.

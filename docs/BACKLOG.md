@@ -9,7 +9,8 @@ the next build.
 Current state (done): manual `run-now`, hold-and-notify (1-hour unpaid hold +
 Telegram). **Two centres** (Paddington, Westway), **courts + activities**,
 **surface preference**, **two-consecutive-hours**, session persistence, discover
-tool. See `CLAUDE.md` / `ARCHITECTURE.md` / `recon/FINDINGS.md`.
+tool. See `../CLAUDE.md` / `ARCHITECTURE.md` / `NEXT_STEPS.md` /
+`../recon/FINDINGS.md`.
 
 ✅ **Built 2026-06-28:** other EA centres (#1), activity bookings (#2), two
 consecutive hours same court (#3), session persistence. Verified in dry-run;
