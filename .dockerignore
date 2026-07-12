@@ -1,0 +1,21 @@
+# Keep the build context minimal — the image only needs src/, config/, requirements.txt.
+.git
+.venv
+.session
+.watchd
+screenshots
+logs
+.env
+*.har
+.claude
+.dockerignore
+deploy
+docs
+recon
+scripts
+tests
+README.md
+CLAUDE.md
+LICENSE
+**/__pycache__
+**/*.pyc

@@ -109,6 +109,17 @@ default). The launchd job is committed **disabled**
 watcher is **paused**. Full status, evidence so far, and the enable procedure:
 `docs/NEXT_STEPS.md`.
 
+## Homelab deployment (watchd) — bundle ready, not deployed 📦
+`tennisbot watchd` can run 24/7 on the homelab: `deploy/docker/Dockerfile`
+(base `mcr.microsoft.com/playwright/python:v1.60.0-noble`; playwright is now
+**pinned 1.60.0** in requirements.txt — bump both together), `.env.example`,
+and the runbook `deploy/docker/DEPLOY.md`. Compose service lives in the homelab
+repo (`services/tennisbot-watchd/`, registered in its `compose.yaml`). Image
+`ghcr.io/ignacio-montero/tennisbot-watchd:0.1.0` builds + smoke-tests OK locally
+(amd64) but is **not pushed**; homelab-repo files are **uncommitted**.
+⚠️ One-session rule still applies: mind the Mac's activity-job times if watchd
+runs on the homelab.
+
 ## Conventions
 - Python venv at `.venv`; deps in `requirements.txt`; Playwright Chromium installed.
 - `structlog` logging. Screenshots in `screenshots/`, session in `.session/`

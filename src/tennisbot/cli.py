@@ -72,6 +72,21 @@ def main(argv: list[str] | None = None) -> int:
     wt.add_argument("--max-polls", type=int, help="Stop after N polls (testing).")
     wt.add_argument("--headed", action="store_true")
 
+    wd = sub.add_parser("watchd", help="24/7 drop-time hunter daemon "
+                        "(read-only; for the always-on host).")
+    wd.add_argument("--centre", default="paddington")
+    wd.add_argument("--surface", help="Surface label (default: preferred).")
+    wd.add_argument("--coarse", type=int, default=1200,
+                    help="Seconds between polls outside hot windows.")
+    wd.add_argument("--fine", type=int, default=20,
+                    help="Seconds between polls inside hot windows.")
+    wd.add_argument("--hot", action="append",
+                    help="Hot window HH:MM-HH:MM (repeatable; default "
+                         "21:35-22:15 + auto-bracket window).")
+    wd.add_argument("--max-cycles", type=int, help="Stop after N cycles (testing).")
+    wd.add_argument("--no-notify", action="store_true")
+    wd.add_argument("--headed", action="store_true")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "discover":
@@ -97,6 +112,14 @@ def main(argv: list[str] | None = None) -> int:
                    surface_label=args.surface, poll_secs=args.poll,
                    until=args.until, max_polls=args.max_polls,
                    headless=not args.headed)
+        return 0
+
+    if args.cmd == "watchd":
+        from .watchd import run_watchd
+        run_watchd(target_key=args.centre, surface_label=args.surface,
+                   coarse_secs=args.coarse, fine_secs=args.fine,
+                   hot_windows=args.hot, notify=not args.no_notify,
+                   headless=not args.headed, max_cycles=args.max_cycles)
         return 0
 
     if args.cmd == "run-now":
