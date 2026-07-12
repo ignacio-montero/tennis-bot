@@ -49,6 +49,14 @@ discussion of the architectural ones lives in
   error-block observed at the likely drop time means a single-shot fire would
   fail; after the spin-wait the bot retries through overload/"not dropped yet"
   within a bounded `--retry-window` (default 90s).
+- **watchd on the homelab (2026-07-12)** — the drop hunt moved off the Mac to
+  a 24/7 Docker daemon on the always-on homelab (residential IP, consistent
+  with the run-from-home decision). All-day coarse polling of both boundary
+  dates settles midnight-vs-evening in one night; a fine-cadence hot window
+  auto-tightens around each detected bracket; built-in blackouts around the
+  Mac activity jobs enforce the one-session rule. Read-only by design — it
+  never books. Same-day morning evidence (today+7 open at 10:37) already
+  falsified "~21:50 releasing D−7".
 - **Secrets hygiene** — `.env` gitignored; launchd plists committed as
   `__PROJECT_DIR__` templates rendered at install; staged-secret scan before
   every push. Telegram token rotated ✅; **EA password rotation still

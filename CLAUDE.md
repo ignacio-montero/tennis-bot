@@ -35,6 +35,9 @@ the Everyone Active app. **Payment / 3DS is intentionally out of scope.**
 .venv/bin/python -m tennisbot watch                      # tonight's drop, both today+7/+8
 .venv/bin/python -m tennisbot drop --time 21:46 --no-notify   # test: dry-run, spin-wait to HH:MM
 .venv/bin/python -m tennisbot drop --live                # real: fire at config drop time
+
+# 24/7 drop-time hunter daemon (runs on the homelab; local test needs PYTHONPATH):
+PYTHONPATH=src .venv/bin/python -m tennisbot watchd --max-cycles 1 --no-notify
 ```
 Targets/surfaces/activities are configured in `config/targets.yaml`.
 `--time HH:MM` overrides ranked prefs (books that time, any court).
@@ -46,7 +49,8 @@ Targets/surfaces/activities are configured in `config/targets.yaml`.
   dry-run vs live, screenshots, Telegram.
 - `discover.py` — `discover` command. `config.py` — typed config. `session.py`
   — storage_state. `notify/telegram.py` — notifications. `cli.py` — entrypoint.
-- `clock.py` — NTP/server-skew + spin-wait. `watch.py` — drop-time finder.
+- `clock.py` — NTP/server-skew + spin-wait. `watch.py` — one-evening drop
+  watcher. `watchd.py` — 24/7 drop-hunter daemon (runs on the homelab).
 
 ## Key facts & gotchas (learned the hard way)
 - **Connect entry is 3-tier** (most→least robust): reuse saved Connect session →
@@ -109,16 +113,26 @@ default). The launchd job is committed **disabled**
 watcher is **paused**. Full status, evidence so far, and the enable procedure:
 `docs/NEXT_STEPS.md`.
 
-## Homelab deployment (watchd) — bundle ready, not deployed 📦
-`tennisbot watchd` can run 24/7 on the homelab: `deploy/docker/Dockerfile`
-(base `mcr.microsoft.com/playwright/python:v1.60.0-noble`; playwright is now
-**pinned 1.60.0** in requirements.txt — bump both together), `.env.example`,
-and the runbook `deploy/docker/DEPLOY.md`. Compose service lives in the homelab
-repo (`services/tennisbot-watchd/`, registered in its `compose.yaml`). Image
-`ghcr.io/ignacio-montero/tennisbot-watchd:0.1.0` builds + smoke-tests OK locally
-(amd64) but is **not pushed**; homelab-repo files are **uncommitted**.
-⚠️ One-session rule still applies: mind the Mac's activity-job times if watchd
-runs on the homelab.
+## Homelab: watchd drop-time hunter — DEPLOYED, LIVE ✅ (2026-07-12)
+`tennisbot watchd` runs 24/7 in Docker on the homelab (container
+`tennisbot-watchd`, image `ghcr.io/ignacio-montero/tennisbot-watchd:0.1.1`,
+no published ports). It polls today+7/+8 coarsely all day (20 min), finely
+(20 s) in hot windows (static 21:35–22:15 + an auto-tightening window around
+the last detected bracket), has built-in blackouts around the Mac's
+activity-job times, and Telegram-pings the closed→open flip with its bracket.
+- Runbook (build/push/update/rollback): `deploy/docker/DEPLOY.md`. Base image
+  `mcr.microsoft.com/playwright/python:v1.60.0-noble`; playwright **pinned
+  1.60.0** in requirements.txt — bump both together.
+- Compose lives in the homelab repo
+  (`~/Development/homelab/services/tennisbot-watchd/`); observations at
+  `/data/watchd/observations.jsonl` + `bracket.json` in volume
+  `tennisbot-watchd-state`; EA session in `tennisbot-watchd-session`.
+- Check on it: `ssh homelab 'docker logs tennisbot-watchd --tail 20'`.
+- ⚠️ One-session rule: the daemon and the Mac's activity jobs share the EA
+  account; blackouts cover the job times — don't run manual sessions during
+  hot windows.
+- ⚠️ On restart it re-pings "already OPEN at first read" for open dates
+  (tracker state is in-memory) — expected noise, not a drop.
 
 ## Conventions
 - Python venv at `.venv`; deps in `requirements.txt`; Playwright Chromium installed.
