@@ -33,6 +33,7 @@ from zoneinfo import ZoneInfo
 import structlog
 
 from .config import ROOT, Secrets, load_targets
+from .notify.telegram import Telegram
 
 log = structlog.get_logger()
 
@@ -176,10 +177,8 @@ def run_watchd(target_key: str = "paddington", surface_label: str | None = None,
                else target.courts.ordered()[0])
     static_hot = hot_windows or list(DEFAULT_HOT_WINDOWS)
 
-    notifier = None
-    if notify:
-        from .notify.telegram import Notifier
-        notifier = Notifier(secrets.telegram_bot_token, secrets.telegram_chat_id)
+    notifier = (Telegram(secrets.telegram_bot_token, secrets.telegram_chat_id)
+                if notify else None)
 
     def ping(text: str) -> None:
         log.info("watchd.notify", text=text)
