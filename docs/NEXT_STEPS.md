@@ -25,11 +25,12 @@ _Last updated: 2026-07-12. For how to run it and the operational gotchas see
   `tennisbot watchd` (deployed 2026-07-12, see CLAUDE.md) polls today+7/+8
   around the clock and will Telegram the exact closed→open bracket, then
   auto-tighten it night after night. **New evidence (2026-07-12 10:37):**
-  today+7 (Sat 19 Jul) was already open with 17 slots in the *morning*, while
-  today+8 (Sun 20 Jul) was `row_full`. That falsifies "~21:50 releasing D−7".
+  today (Sun 12 Jul) +7 = **Sun 19 Jul** was already open with 17 slots in the
+  *morning*, while today+8 = **Mon 20 Jul** was `row_full`. That falsifies
+  "~21:50 releasing D−7".
   Remaining candidates: **midnight** (D opens at 00:00 of D−7) or **evening
   ~21:50 releasing D−8** (which would reconcile the 2026-07-05 21:49–22:02
-  error-block). Either way 20 Jul flips tonight — expect the answer within
+  error-block). Either way Mon 20 Jul flips tonight — expect the answer within
   1–2 nights, sub-minute within ~3 (coarse 20 min → auto hot-window 20 s).
   Old one-evening `watch` stays paused; the daemon has blackouts around the
   Mac activity jobs (Wed 19:00/20:30, Sun 13:00/14:30 ± margin).
