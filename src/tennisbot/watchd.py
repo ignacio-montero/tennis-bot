@@ -265,6 +265,11 @@ def run_watchd(target_key: str = "paddington", surface_label: str | None = None,
             dates = [(now.date() + dt.timedelta(days=n)).isoformat()
                      for n in (7, 8)]
             for date in dates:
+                # Nothing left to learn from a date that already flipped open —
+                # skipping it keeps the poll cycle short, so the bracket around
+                # the *next* drop stays tight.
+                if date in tracker.open_seen:
+                    continue
                 started = dt.datetime.now(LONDON).isoformat()
                 try:
                     ensure_session()
