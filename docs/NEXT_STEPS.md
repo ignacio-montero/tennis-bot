@@ -50,14 +50,21 @@ _Last updated: 2026-07-13. For how to run it and the operational gotchas see
    `ssh homelab 'docker exec tennisbot-watchd cat /data/watchd/observations.jsonl' | tail`.
    If confirmed: set `targets.yaml drop.local_time: "00:00"` (fire just past
    midnight; `days_before: 7` — at 00:00 of day X, X+7 opens, so to book Sat
-   25 Jul the job fires in the night Fri 17→Sat 18), enable the court-drop
-   job, and consider moving `drop` to the homelab (the Mac would need to be
-   awake at midnight) and widening watchd back to coarse-only.
+   25 Jul the job fires in the night Fri 17→Sat 18). **Run `drop` on the
+   homelab, not the Mac** (a sleeping Mac misses a midnight launchd job).
+   Keep watchd running through the week to confirm the Fri→Sat drop matches,
+   then **stop (don't delete) watchd** once the first live drop succeeds —
+   it stays on the shelf as a sentinel, re-armed with one `compose up -d` if
+   `drop` ever starts failing at 00:00 (policy drift). watchd needs a
+   blackout/stop around the drop instant — one session per account.
 2. Verify a 2-hour live booking once.
 3. **<redacted>** (Telegram token already rotated) — it was shared
    <redacted>.
-4. When ready, move hosting to the old Windows laptop (Docker + Tailscale —
-   plan in [BACKLOG.md](BACKLOG.md) §7); trigger layer is already portable.
+4. **Production target = the homelab for EVERYTHING** (decided 2026-07-13,
+   supersedes the old Windows-laptop idea in BACKLOG §7): court-drop job
+   first, then the four activity jobs (removing the "Mac must be awake"
+   caveat entirely). The trigger layer is portable by design — same image,
+   new triggers (cron/compose on the box), booking code unchanged.
 
 ## Known risks / caveats
 
