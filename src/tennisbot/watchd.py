@@ -7,10 +7,11 @@ flips closed→open after a sustained-closed baseline it records the bracket
 it settles the midnight-vs-evening question in a single day, then narrows:
 
 - COARSE cadence all day (default 20 min) → day 1 gives a ≤20-min bracket.
-- FINE cadence (default 20 s) inside "hot windows": the static evening window
-  (~21:35–22:15, current best theory) plus an automatic window centred on the
-  last recorded bracket — so each successive night tightens the estimate
-  without any manual retuning.
+- FINE cadence (default 20 s) inside "hot windows": the static windows
+  (midnight ~23:40–00:30, current best theory, + evening 21:35–22:15 fallback)
+  plus an automatic window centred on the last recorded bracket — so each
+  successive night tightens the estimate without any manual retuning. Windows
+  may cross midnight ("23:40-00:30").
 - BLACKOUTS around the Mac's activity launchd jobs (Wed 19:00/20:30,
   Sun 13:00/14:30): the browser is closed and no polling happens — never two
   concurrent sessions on the account.
@@ -54,7 +55,9 @@ DEFAULT_BLACKOUTS = [  # (weekday 0=Mon, "HH:MM", "HH:MM")
     (6, "14:20", "14:55"),   # Sun backup  14:30
 ]
 
-DEFAULT_HOT_WINDOWS = ["21:35-22:15"]  # evening ~21:50 theory
+# Midnight window is primary: bracket 2026-07-12→13 showed D+7 opening between
+# 23:59:40 and 00:19:40 (midnight-D7 theory). Evening window kept as fallback.
+DEFAULT_HOT_WINDOWS = ["23:40-00:30", "21:35-22:15"]
 HEARTBEAT_AT = "09:00"                 # daily "I'm alive" Telegram summary
 
 
@@ -99,8 +102,13 @@ def bracket_hot_window(bracket: dict | None, pad_min: int = 5) -> str | None:
 def in_hot_window(now: dt.datetime, windows: list[str]) -> bool:
     for w in windows:
         start, end = w.split("-")
-        if _hm(start) <= now.time() < _hm(end):
-            return True
+        s, e = _hm(start), _hm(end)
+        if s <= e:
+            if s <= now.time() < e:
+                return True
+        else:  # window crosses midnight, e.g. "23:40-00:30"
+            if now.time() >= s or now.time() < e:
+                return True
     return False
 
 

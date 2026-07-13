@@ -43,6 +43,30 @@ def test_hot_window_membership():
     assert not in_hot_window(_at(0, "12:00"), ["21:35-22:15"])
 
 
+def test_hot_window_crossing_midnight():
+    w = ["23:40-00:30"]
+    assert in_hot_window(_at(0, "23:40"), w)      # start inclusive
+    assert in_hot_window(_at(0, "23:59"), w)      # before midnight
+    assert in_hot_window(_at(0, "00:00"), w)      # midnight itself
+    assert in_hot_window(_at(0, "00:29"), w)      # after midnight
+    assert not in_hot_window(_at(0, "00:30"), w)  # end exclusive
+    assert not in_hot_window(_at(0, "23:39"), w)
+    assert not in_hot_window(_at(0, "12:00"), w)
+
+
+def test_auto_bracket_window_crossing_midnight_matches():
+    # The real bracket recorded 2026-07-12→13: last_closed 23:59, first_open
+    # 00:19 → auto window "23:54-00:24" crosses midnight and must match.
+    bracket = {"date": "2026-07-20",
+               "last_closed": "2026-07-12T23:59:40+01:00",
+               "first_open": "2026-07-13T00:19:40+01:00"}
+    w = bracket_hot_window(bracket, pad_min=5)
+    assert w == "23:54-00:24"
+    assert in_hot_window(_at(0, "23:58"), [w])
+    assert in_hot_window(_at(0, "00:10"), [w])
+    assert not in_hot_window(_at(0, "01:00"), [w])
+
+
 def test_bracket_hot_window_pads_both_sides():
     bracket = {"date": "2026-07-19",
                "last_closed": "2026-07-12T21:48:10+01:00",
