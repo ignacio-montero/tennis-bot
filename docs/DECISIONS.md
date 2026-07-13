@@ -57,6 +57,16 @@ discussion of the architectural ones lives in
   Mac activity jobs enforce the one-session rule. Read-only by design — it
   never books. Same-day morning evidence (today+7 open at 10:37) already
   falsified "~21:50 releasing D−7".
+- **Hot windows must handle midnight wraparound (2026-07-13)** — the first
+  real bracket (Mon 20 Jul: closed 23:59:40 → open 00:19:40) supports the
+  **midnight-D7** drop theory, but the auto-tightened window it implied
+  (23:54–00:24) crosses midnight and `in_hot_window`'s naive
+  `start <= now < end` check could never match it — watchd would have coasted
+  through the decisive night on the 20-min coarse cadence. Fixed (wraparound
+  branch), added a static 23:40–00:30 midnight window as primary (evening
+  21:35–22:15 kept as fallback), and stopped re-polling dates already seen
+  open so the fine cycle is ~35 s not ~60 s. Shipped as image 0.1.3 the same
+  evening, ~1.5 h before the expected drop.
 - **Secrets hygiene** — `.env` gitignored; launchd plists committed as
   `__PROJECT_DIR__` templates rendered at install; staged-secret scan before
   every push. Telegram token rotated ✅; **EA password rotation still

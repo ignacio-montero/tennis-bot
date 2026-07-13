@@ -115,11 +115,14 @@ watcher is **paused**. Full status, evidence so far, and the enable procedure:
 
 ## Homelab: watchd drop-time hunter — DEPLOYED, LIVE ✅ (2026-07-12)
 `tennisbot watchd` runs 24/7 in Docker on the homelab (container
-`tennisbot-watchd`, image `ghcr.io/ignacio-montero/tennisbot-watchd:0.1.1`,
+`tennisbot-watchd`, image `ghcr.io/ignacio-montero/tennisbot-watchd:0.1.3`,
 no published ports). It polls today+7/+8 coarsely all day (20 min), finely
-(20 s) in hot windows (static 21:35–22:15 + an auto-tightening window around
-the last detected bracket), has built-in blackouts around the Mac's
-activity-job times, and Telegram-pings the closed→open flip with its bracket.
+(20 s) in hot windows (static **23:40–00:30** midnight-primary + 21:35–22:15
+evening fallback + an auto-tightening window around the last detected bracket;
+windows may cross midnight), skips dates already seen open, has built-in
+blackouts around the Mac's activity-job times, and Telegram-pings the
+closed→open flip with its bracket. **Evidence 2026-07-12→13: Mon 20 Jul
+flipped open between 23:59:40 and 00:19:40 → midnight-D7 theory.**
 - Runbook (build/push/update/rollback): `deploy/docker/DEPLOY.md`. Base image
   `mcr.microsoft.com/playwright/python:v1.60.0-noble`; playwright **pinned
   1.60.0** in requirements.txt — bump both together.

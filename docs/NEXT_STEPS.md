@@ -1,6 +1,6 @@
 # Tennis-Bot — Status & next steps
 
-_Last updated: 2026-07-12. For how to run it and the operational gotchas see
+_Last updated: 2026-07-13. For how to run it and the operational gotchas see
 [../CLAUDE.md](../CLAUDE.md); for future ideas see [BACKLOG.md](BACKLOG.md)._
 
 ## What works today ✅
@@ -21,17 +21,19 @@ _Last updated: 2026-07-12. For how to run it and the operational gotchas see
 
 ## In progress / blocked ⏳
 
-- **Pin down the court drop time — hunter is now LIVE on the homelab.**
-  `tennisbot watchd` (deployed 2026-07-12, see CLAUDE.md) polls today+7/+8
-  around the clock and will Telegram the exact closed→open bracket, then
-  auto-tighten it night after night. **New evidence (2026-07-12 10:37):**
-  today (Sun 12 Jul) +7 = **Sun 19 Jul** was already open with 17 slots in the
-  *morning*, while today+8 = **Mon 20 Jul** was `row_full`. That falsifies
-  "~21:50 releasing D−7".
-  Remaining candidates: **midnight** (D opens at 00:00 of D−7) or **evening
-  ~21:50 releasing D−8** (which would reconcile the 2026-07-05 21:49–22:02
-  error-block). Either way Mon 20 Jul flips tonight — expect the answer within
-  1–2 nights, sub-minute within ~3 (coarse 20 min → auto hot-window 20 s).
+- **Pin down the court drop time — MIDNIGHT-D7 all but confirmed, one tight
+  night to go.** watchd's bracket for **Mon 20 Jul**:
+  closed at **Sun 12 Jul 23:59:40** → open at **Mon 13 Jul 00:19:40** (47
+  slots). That kills the "evening releasing D−8" theory and is consistent with
+  **D opens at 00:00 of D−7**. The bracket was 20 min wide because the
+  auto-tightened window (23:54–00:24) crosses midnight and `in_hot_window`
+  couldn't match wraparound windows — **fixed and redeployed 2026-07-13 ~22:15
+  as image 0.1.3** (wraparound windows + static 23:40–00:30 hot window + skip
+  dates already seen open). Tonight (13→14 Jul, Tue 21 Jul flips) the poll
+  cycle is ~35 s inside the window → expect a ≤1-min bracket around 00:00 via
+  Telegram. ⚠️ Evening reads of *open* dates flap `row_full` under load
+  (~21:50–22:15) — a stray "already OPEN"/"DROP" ping about the 20th this
+  evening is restart noise, not a drop.
   Old one-evening `watch` stays paused; the daemon has blackouts around the
   Mac activity jobs (Wed 19:00/20:30, Sun 13:00/14:30 ± margin).
 - **Court-drop launchd job is DISABLED**
@@ -43,11 +45,14 @@ _Last updated: 2026-07-12. For how to run it and the operational gotchas see
 
 ## Recommended next steps
 
-1. Wait for watchd's Telegram bracket alerts (tonight/tomorrow), confirm the
-   drop time, then enable the court-drop job. Read the raw evidence with:
+1. Check tonight's (13→14 Jul) Telegram bracket for Tue 21 Jul — expected
+   ≤1 min around 00:00. Raw evidence:
    `ssh homelab 'docker exec tennisbot-watchd cat /data/watchd/observations.jsonl' | tail`.
-   Once confirmed, consider moving `drop` itself to the homelab (image +
-   trigger already portable) and retiring/tightening watchd's hot window.
+   If confirmed: set `targets.yaml drop.local_time: "00:00"` (fire just past
+   midnight; `days_before: 7` — at 00:00 of day X, X+7 opens, so to book Sat
+   25 Jul the job fires in the night Fri 17→Sat 18), enable the court-drop
+   job, and consider moving `drop` to the homelab (the Mac would need to be
+   awake at midnight) and widening watchd back to coarse-only.
 2. Verify a 2-hour live booking once.
 3. **<redacted>** (Telegram token already rotated) — it was shared
    <redacted>.
