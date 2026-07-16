@@ -80,8 +80,9 @@ Targets/surfaces/activities are configured in `config/targets.yaml`.
 
 ## Secrets
 `.env` (gitignored): `EA_EMAIL`, `EA_PASSWORD`, `TELEGRAM_BOT_TOKEN`,
-`TELEGRAM_CHAT_ID`. Telegram token rotated ✅; ⚠️ **EA password rotation still
-pending** (<removed>).
+`TELEGRAM_CHAT_ID`. Telegram token rotated ✅. <redacted>
+<redacted> (decided 2026-07-16) — accepted as-is despite <redacted>
+share; not a pending task.
 
 ## Automation — activity booking (LIVE, scheduled) ✅
 Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
@@ -105,13 +106,15 @@ Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
   (cron, Task Scheduler, EventBridge) at the same `scheduled_run.sh` / CLI — no
   booking-logic changes. Code lives in `deploy/`.
 
-## Court-drop scheduler — built, disabled pending drop-time confirmation ⏳
+## Court-drop scheduler — built, drop time CONFIRMED (00:00 D−7), not yet enabled ⏳
 `tennisbot drop` pre-warms a session, measures server-clock skew, spin-waits to
 the drop instant, then camps through overload within `--retry-window` (90s
-default). The launchd job is committed **disabled**
-(`deploy/launchd/com.tennisbot.court-drop.plist.DISABLED`); the drop-time
-watcher is **paused**. Full status, evidence so far, and the enable procedure:
-`docs/NEXT_STEPS.md`.
+default). **Drop time confirmed 2026-07-16: courts release at 00:00:00 London
+on D−7** (21 & 23 Jul both flipped open within ~20 s of midnight; see
+DECISIONS.md). The launchd job is still committed **disabled**
+(`deploy/launchd/com.tennisbot.court-drop.plist.DISABLED`); next step is to
+enable it **on the homelab** (not the Mac). The drop-time watcher is **paused**.
+Full status + enable procedure: `docs/NEXT_STEPS.md`.
 
 ## Homelab: watchd drop-time hunter — DEPLOYED, LIVE ✅ (2026-07-12)
 `tennisbot watchd` runs 24/7 in Docker on the homelab (container

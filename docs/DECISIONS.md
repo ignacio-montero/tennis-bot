@@ -67,7 +67,20 @@ discussion of the architectural ones lives in
   21:35–22:15 kept as fallback), and stopped re-polling dates already seen
   open so the fine cycle is ~35 s not ~60 s. Shipped as image 0.1.3 the same
   evening, ~1.5 h before the expected drop.
-- **Secrets hygiene** — `.env` gitignored; launchd plists committed as
-  `__PROJECT_DIR__` templates rendered at install; staged-secret scan before
-  every push. Telegram token rotated ✅; **EA password rotation still
-  pending** (was <removed>).
+- **Midnight-D7 confirmed (2026-07-16)** — after the wraparound fix, two clean
+  nights settled the drop time: **Mon 21 Jul** flipped open 14 Jul 00:00:07 →
+  00:00:27 and **Thu 23 Jul** flipped 16 Jul 00:00:09 → 00:00:29 — both ~20 s
+  brackets on the stroke of midnight, exactly 7 days ahead. Conclusion: courts
+  release at **00:00:00 London on D−7**. This clears the last blocker on
+  enabling the `drop` job (fire just past 00:00 on the homelab). One outlier
+  logged alongside: **Tue 22 Jul** was seen opening ~04:16 on 14 Jul (20-min
+  coarse-poll bracket) — off-clock and ~a day early vs strict D−7, likely a
+  manual re-release or cancellation batch rather than the scheduled drop. Not
+  enough to unseat the two clean confirmations, but the reason watchd stays
+  running as a sentinel past the first live drop rather than being retired
+  immediately.
+- **<redacted> <redacted> (2026-07-16, deliberate)** — decided not to
+  <redacted> despite it being <redacted>
+  setup; accepted as-is. (Telegram token was rotated ✅.) `.env` stays
+  gitignored, launchd plists committed as `__PROJECT_DIR__` templates rendered
+  at install, staged-secret scan before every push.
