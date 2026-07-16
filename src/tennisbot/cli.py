@@ -51,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     dr.add_argument("--centre", default="paddington")
     dr.add_argument("--time", help="Override drop time HH:MM (for testing).")
     dr.add_argument("--want-time", help="Book this HH:MM (else ranked prefs).")
+    dr.add_argument("--after", help="Book earliest available court at/after this "
+                    "HH:MM, any court (overrides ranked prefs; for dry-run "
+                    "rehearsals).")
     dr.add_argument("--live", action="store_true",
                     help="Create the hold (default dry-run).")
     dr.add_argument("--epsilon", type=float, default=0.15,
@@ -101,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
                        headless=not args.headed, want_time=args.want_time,
                        time_override=args.time, notify=not args.no_notify,
                        epsilon=args.epsilon, retry_window_s=args.retry_window,
-                       retry_gap_s=args.retry_gap)
+                       retry_gap_s=args.retry_gap, after_time=args.after)
         print(f"\nRESULT: ok={res.ok} dry_run={res.dry_run} "
               f"chosen={res.chosen} :: {res.message}")
         return 0 if res.ok else 1

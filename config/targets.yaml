@@ -10,10 +10,10 @@ paddington:
   provider: everyoneactive
   site: "0156"
   # local_time = the instant `drop` spin-waits to, then camps/retries forward.
-  # PLACEHOLDER 22:00 (user request). Evidence 2026-07-05 points to ~21:50
-  # (site error-block onset), so before going live set this a touch BEFORE the
-  # real drop (e.g. 21:48) so the retry window camps through it.
-  drop: {days_before: 7, local_time: "22:00", timezone: "Europe/London"}
+  # CONFIRMED 2026-07-16: courts release at 00:00:00 London on D-7 (21 & 23 Jul
+  # both flipped open within ~20s of midnight). Rehearsals fire later via
+  # `drop --time HH:MM`; the live job uses this 00:00.
+  drop: {days_before: 7, local_time: "00:00", timezone: "Europe/London"}
   max_holds_per_run: 1
 
   courts:

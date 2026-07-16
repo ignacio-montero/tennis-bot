@@ -63,3 +63,28 @@ def test_no_match_returns_empty():
     slots = [_slot("08:00", "Court 1", avail=True)]
     chosen = choose_court_slots(slots, _target(False), want_time=None)
     assert chosen == []
+
+
+# ── after_time (dry-run rehearsal: "any court at/after HH:MM") ──────────────
+def test_after_time_picks_earliest_at_or_after():
+    slots = [_slot("18:00", "Court 1"), _slot("19:00", "Court 2"),
+             _slot("20:00", "Court 3")]
+    chosen = choose_court_slots(slots, _target(False), want_time=None,
+                                after_time="19:00")
+    assert len(chosen) == 1 and chosen[0].time == "19:00"  # 18:00 excluded
+
+
+def test_after_time_skips_earlier_and_taken_slots():
+    # 18:00 is before the cutoff; 19:00 exists but is taken -> earliest is 20:00.
+    slots = [_slot("18:00", "Court 1"), _slot("19:00", "Court 2", avail=False),
+             _slot("20:00", "Court 3")]
+    chosen = choose_court_slots(slots, _target(False), want_time=None,
+                                after_time="19:00")
+    assert len(chosen) == 1 and chosen[0].time == "20:00"
+
+
+def test_after_time_none_available_returns_empty():
+    slots = [_slot("18:00", "Court 1")]  # only before the cutoff
+    chosen = choose_court_slots(slots, _target(False), want_time=None,
+                                after_time="19:00")
+    assert chosen == []

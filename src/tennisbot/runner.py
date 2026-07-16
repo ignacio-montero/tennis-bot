@@ -9,11 +9,15 @@ Modes:
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import structlog
 from playwright.sync_api import sync_playwright
 
+from . import clock
 from .config import Secrets, Target, load_targets
 from .models import RunResult, Slot
 from .notify.telegram import Telegram
@@ -39,6 +43,47 @@ def _next_hour(hhmm: str) -> str:
     return f"{int(hhmm[:2]) + 1:02d}:{hhmm[3:5]}"
 
 
+def _next_drop(drop_local: str, tz: str, days_before: int,
+               now_epoch: float | None = None,
+               grace_s: float = 300.0) -> tuple[float, str]:
+    """Resolve the upcoming drop instant and the date it releases.
+
+    The drop fires at `drop_local` (HH:MM) in `tz`; the slot that opens is
+    `days_before` days after the drop's OWN calendar date. This must key off the
+    drop's date, not the wall-clock 'today' at launch: pre-warming at 23:56 for a
+    00:00 drop is still aiming at the next day's 00:00 (and thus that day + 7).
+    Returns (instant_epoch, target_date_iso).
+
+    `grace_s` keeps a slightly-late launch (fired just after the instant) locked
+    onto the drop that just happened, rather than skipping to tomorrow's.
+    """
+    zone = ZoneInfo(tz)
+    now = now_epoch if now_epoch is not None else dt.datetime.now(zone).timestamp()
+    on = dt.datetime.fromtimestamp(now, zone).date()
+    instant = clock.drop_instant(drop_local, tz, on=on)
+    if instant < now - grace_s:            # today's drop well past -> aim next day
+        on = on + dt.timedelta(days=1)
+        instant = clock.drop_instant(drop_local, tz, on=on)
+    target_date = (on + dt.timedelta(days=days_before)).isoformat()
+    return instant, target_date
+
+
+def _append_drop_outcome(outcome: dict) -> None:
+    """Append one drop outcome to $DROP_STATE_DIR/drop-outcomes.jsonl so results
+    are trackable across nights (the homelab mounts a volume there). No-op when
+    DROP_STATE_DIR is unset (local runs / tests)."""
+    d = os.environ.get("DROP_STATE_DIR")
+    if not d:
+        return
+    try:
+        p = Path(d)
+        p.mkdir(parents=True, exist_ok=True)
+        with (p / "drop-outcomes.jsonl").open("a") as f:
+            f.write(json.dumps(outcome) + "\n")
+    except Exception as e:                  # never let logging break a booking
+        log.warn("drop.outcome_persist_failed", err=str(e))
+
+
 def _candidate_times(target: Target, target_date: str,
                      want_time: str | None) -> list[str]:
     """Times to pursue, in preference order, for this date's weekday."""
@@ -49,16 +94,26 @@ def _candidate_times(target: Target, target_date: str,
 
 
 def choose_court_slots(slots: list[Slot], target: Target,
-                       want_time: str | None) -> list[Slot]:
+                       want_time: str | None,
+                       after_time: str | None = None) -> list[Slot]:
     """Pick the slot(s) to book from one surface's grid, honouring ranked
     preferences. Returns [] / [one] / [two] (two = consecutive, same court).
     For 2-hour mode: if the second hour isn't free on the same court, book the
-    single hour (per user's choice)."""
+    single hour (per user's choice).
+
+    `after_time` (HH:MM) overrides ranked prefs: pursue the EARLIEST available
+    slot at or after that time, any court — used by the drop dry-run rehearsal
+    ('book any court after 19:00'). Times are zero-padded HH:MM so a string
+    compare orders them correctly."""
     if not slots:
         return []
     avail = [s for s in slots if s.available]
     two_hours = bool(target.courts and target.courts.two_hours)
-    for t in _candidate_times(target, slots[0].date, want_time):
+    if after_time:
+        candidate_times = sorted({s.time for s in avail if s.time >= after_time})
+    else:
+        candidate_times = _candidate_times(target, slots[0].date, want_time)
+    for t in candidate_times:
         first_choices = [s for s in avail if s.time == t]
         if not first_choices:
             continue
@@ -98,7 +153,8 @@ def _hold_one(page, prov, target, surface, target_date, court, time) -> str | No
 
 
 # ── court mode ────────────────────────────────────────────────────────────────
-def _run_court(page, ctx, prov, target, target_date, dry_run, want_time, tg):
+def _run_court(page, ctx, prov, target, target_date, dry_run, want_time, tg,
+               after_time=None):
     SHOTS.mkdir(exist_ok=True)
     notes: list[str] = []
     for surface in target.courts.ordered():
@@ -113,8 +169,11 @@ def _run_court(page, ctx, prov, target, target_date, dry_run, want_time, tg):
             notes.append(f"{surface.label}: not offered"); continue
 
         slots = prov.parse_timetable(page, target_date)
-        chosen = choose_court_slots(slots, target, want_time)
         avail_times = sorted({s.time for s in slots if s.available})
+        log.info("drop.grid", surface=surface.label, date=target_date,
+                 n_slots=len(slots), n_avail=len(avail_times),
+                 avail_times=avail_times)
+        chosen = choose_court_slots(slots, target, want_time, after_time)
         if not chosen:
             notes.append(f"{surface.label}: no preferred slot "
                          f"(avail: {', '.join(avail_times) or 'none'})")
@@ -236,20 +295,24 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
              headless: bool = True, want_time: str | None = None,
              time_override: str | None = None, notify: bool = True,
              epsilon: float = 0.15, retry_window_s: float = 90.0,
-             retry_gap_s: float = 1.0) -> RunResult:
+             retry_gap_s: float = 1.0,
+             after_time: str | None = None) -> RunResult:
     """Pre-warm a session, spin-wait to the server-clock drop instant, then
     'camp' the booking: retry rapidly through overload / not-yet-dropped until it
-    books or `retry_window_s` elapses. Targets today + days_before.
+    books or `retry_window_s` elapses. Targets the date the drop releases
+    (drop date + days_before — see _next_drop for the midnight-rollover reason).
+
+    `after_time` (HH:MM) books the earliest available court at/after that time,
+    any court — used by the dry-run rehearsal ('book any court after 19:00').
     """
     import time as _time
-    from . import clock
     secrets = Secrets.from_env()
     target = load_targets()[target_key]
     tg = (Telegram(secrets.telegram_bot_token, secrets.telegram_chat_id)
           if notify else _NullTelegram())
     drop_local = time_override or target.drop.local_time
-    target_date = (dt.date.today()
-                   + dt.timedelta(days=target.drop.days_before)).isoformat()
+    instant, target_date = _next_drop(drop_local, target.drop.timezone,
+                                      target.drop.days_before)
 
     with sync_playwright() as p:
         browser, ctx = make_context(p, headless=headless)
@@ -259,9 +322,8 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
             prov.start_session(ctx, page)      # pre-warm: authenticate early
             prov.enter_connect(page, ctx)
             skew = clock.server_skew()
-            instant = clock.drop_instant(drop_local, target.drop.timezone)
             log.info("drop.armed", date=target_date, drop_local=drop_local,
-                     skew=round(skew, 3))
+                     skew=round(skew, 3), after_time=after_time)
             tg.send(f"⏳ Armed: {target.name} court drop {drop_local} "
                     f"(for {target_date}). Server skew {skew:+.2f}s.")
             clock.wait_until(instant, skew=skew, epsilon=epsilon)
@@ -277,7 +339,7 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
                 attempts += 1
                 try:
                     result = _run_court(page, ctx, prov, target, target_date,
-                                        dry_run, want_time, quiet)
+                                        dry_run, want_time, quiet, after_time)
                 except Exception as e:                       # overload / timeout
                     log.warn("drop.attempt_failed", n=attempts, err=str(e)[:120])
                     _time.sleep(retry_gap_s)
@@ -287,8 +349,27 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
                     break
                 _time.sleep(retry_gap_s)                      # not up yet — retry
 
+            def _record(ok, chosen_slot, msg):
+                """One structured summary line + a persisted outcome, so a
+                triggered run's result is visible in logs AND trackable across
+                nights (drop-outcomes.jsonl)."""
+                outcome = {
+                    "ts": dt.datetime.now(ZoneInfo(target.drop.timezone)).isoformat(),
+                    "target": target.key, "target_date": target_date,
+                    "drop_local": drop_local, "after_time": after_time,
+                    "skew": round(skew, 3), "attempts": attempts,
+                    "dry_run": dry_run, "ok": ok,
+                    "chosen": (f"{chosen_slot.time} {chosen_slot.court}"
+                               if chosen_slot else None),
+                    "message": msg,
+                }
+                log.info("drop.result", **outcome)
+                _append_drop_outcome(outcome)
+
             if result is not None and result.chosen is not None:
                 s = result.chosen
+                _record(True, s,
+                        f"{'would book' if dry_run else 'held'} {s.time} {s.court}")
                 if dry_run:
                     tg.send(f"🎾 <b>DRY-RUN drop</b> — {target.name}: would book "
                             f"{s.time} {s.court} on {target_date} "
@@ -305,6 +386,7 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
                             pass
                 return result
 
+            _record(False, None, "no slot after retries")
             tg.send(f"🎾 {target.name} court drop {drop_local}: no slot secured "
                     f"after {attempts} attempts / {retry_window_s:.0f}s.")
             return result or RunResult(ok=False, dry_run=dry_run,
