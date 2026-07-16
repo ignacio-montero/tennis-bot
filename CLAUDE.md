@@ -106,15 +106,23 @@ Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
   (cron, Task Scheduler, EventBridge) at the same `scheduled_run.sh` / CLI — no
   booking-logic changes. Code lives in `deploy/`.
 
-## Court-drop scheduler — built, drop time CONFIRMED (00:00 D−7), not yet enabled ⏳
+## Court-drop scheduler — REHEARSAL DEPLOYED on the homelab (dry-run) ✅⏳ (2026-07-16)
 `tennisbot drop` pre-warms a session, measures server-clock skew, spin-waits to
 the drop instant, then camps through overload within `--retry-window` (90s
-default). **Drop time confirmed 2026-07-16: courts release at 00:00:00 London
-on D−7** (21 & 23 Jul both flipped open within ~20 s of midnight; see
-DECISIONS.md). The launchd job is still committed **disabled**
-(`deploy/launchd/com.tennisbot.court-drop.plist.DISABLED`); next step is to
-enable it **on the homelab** (not the Mac). The drop-time watcher is **paused**.
-Full status + enable procedure: `docs/NEXT_STEPS.md`.
+default). **Drop time confirmed: 00:00:00 London on D−7** (21 & 23 Jul flipped
+open within ~20 s of midnight; see DECISIONS.md).
+- **Now running as `tennisbot-drop` on the homelab** (image `0.2.0`, shared with
+  watchd; `profiles:[drop]` so it's one-shot, not a daemon). Fired by nacho's
+  **crontab** at 00:41 London via `run-drop.sh`, which stops watchd for the run
+  then restarts it (one-session rule). **Dry-run** (`--after 19:00`, no `--live`)
+  — books nothing yet. Graduation: 00:41→00:00 instant→`DROP_LIVE=1`. Full path
+  + check commands in `docs/NEXT_STEPS.md`; compose/runbook in the homelab repo
+  `services/tennisbot-drop/`.
+- New drop flags: `drop --after HH:MM` (earliest available court at/after a time,
+  any court) and a midnight-rollover-safe target date (`_next_drop`). Outcomes
+  persist to `drop-outcomes.jsonl` under `$DROP_STATE_DIR`.
+- The old Mac **launchd** drop job is abandoned (homelab is the target); its
+  disabled plist template stays in `deploy/launchd/` for reference only.
 
 ## Homelab: watchd drop-time hunter — DEPLOYED, LIVE ✅ (2026-07-12)
 `tennisbot watchd` runs 24/7 in Docker on the homelab (container

@@ -49,16 +49,25 @@ _Last updated: 2026-07-16. For how to run it and the operational gotchas see
 
 ## Recommended next steps
 
-1. **Enable the `drop` job on the homelab** — drop time is confirmed, so set
-   `targets.yaml drop.local_time: "00:00"` (fire just past midnight;
-   `days_before: 7` — at 00:00 of day X, X+7 opens, so to book Sat 25 Jul the
-   job fires in the night Fri 17→Sat 18). **Run `drop` on the homelab, not the
-   Mac** (a sleeping Mac misses a midnight launchd job). Keep watchd running
-   through the week to confirm live drops match, then **stop (don't delete)
-   watchd** once the first live drop succeeds — it stays on the shelf as a
-   sentinel, re-armed with one `compose up -d` if `drop` ever starts failing at
-   00:00 (policy drift, e.g. the 22 Jul-style off-clock re-release). watchd
-   needs a blackout/stop around the drop instant — one session per account.
+1. **Drop rehearsal DEPLOYED on the homelab (2026-07-16), dry-run.** Service
+   `tennisbot-drop` (image `0.2.0`, `profiles:[drop]`) is cron-fired at **00:41
+   London** (`41 23 * * *` UTC) by `run-drop.sh`, which stops watchd for the run
+   and restarts it after (one-session rule), then books *any court ≥19:00 on
+   D+7* — **dry-run, no hold**. Verified end-to-end on the box (login→skew→
+   spin-wait fired at the instant→grid parse→outcome persisted→watchd restarted).
+   Runbook/compose live in the homelab repo (`services/tennisbot-drop/`).
+   **Graduation path:**
+   a. Watch 1–2 nights of the 00:41 dry-run (Telegram `🎾 DRY-RUN`, or
+      `ssh homelab 'tail ~/homelab/services/tennisbot-drop/logs/cron.log'`, or
+      the `drop-outcomes.jsonl` volume). Expect a "would book 19:00+" now that
+      it targets a freshly-dropped D+7.
+   b. Move to the **real 00:00** instant: swap the crontab line to the
+      `DROP_TIME=00:00` / `56 22 * * *` UTC variant (in `crontab.example`),
+      still dry-run, for a couple more nights.
+   c. Go **live**: add `DROP_LIVE=1` to the crontab line — creates real holds.
+   Keep watchd running as the sentinel throughout; **stop (don't delete)** it
+   once the first live drop succeeds — re-arm with one `compose up -d` if `drop`
+   later fails at 00:00 (policy drift, e.g. the 22 Jul-style off-clock release).
 2. Verify a 2-hour live booking once.
 3. **Production target = the homelab for EVERYTHING** (decided 2026-07-13,
    supersedes the old Windows-laptop idea in BACKLOG §7): court-drop job
