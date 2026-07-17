@@ -443,6 +443,28 @@ class EveryoneActiveProvider:
                       selector=f'[data-tb="{r["tag"]}"]') for r in raw]
         log.info("timetable.parsed", total=len(slots),
                  available=sum(s.available for s in slots))
+        # Diagnostic visibility on a brittle grid: every time present in the
+        # grid (available or not) + any non-time control labels (e.g. "Booked").
+        # Cheap; invaluable when a wanted slot mysteriously "isn't offered".
+        try:
+            dbg = page.evaluate(
+                r"""() => {
+                    const times = new Set(), nontime = new Set();
+                    for (const tr of document.querySelectorAll('table tr'))
+                        for (const c of tr.children) {
+                            const b = c.querySelector('input,button,a');
+                            if (!b) continue;
+                            const t = (b.value || b.innerText || '').trim();
+                            if (/^\d\d:\d\d$/.test(t)) times.add(t.slice(0,5));
+                            else if (t) nontime.add(t.slice(0,20));
+                        }
+                    return {times: [...times].sort(),
+                            nontime: [...nontime].slice(0, 15)};
+                }"""
+            )
+            log.info("timetable.debug", times=dbg["times"], nontime=dbg["nontime"])
+        except Exception:
+            pass
         return slots
 
 

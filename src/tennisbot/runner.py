@@ -170,9 +170,10 @@ def _run_court(page, ctx, prov, target, target_date, dry_run, want_time, tg,
 
         slots = prov.parse_timetable(page, target_date)
         avail_times = sorted({s.time for s in slots if s.available})
+        all_times = sorted({s.time for s in slots})
         log.info("drop.grid", surface=surface.label, date=target_date,
                  n_slots=len(slots), n_avail=len(avail_times),
-                 avail_times=avail_times)
+                 avail_times=avail_times, all_times=all_times)
         chosen = choose_court_slots(slots, target, want_time, after_time)
         if not chosen:
             notes.append(f"{surface.label}: no preferred slot "
@@ -349,16 +350,17 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
                     break
                 _time.sleep(retry_gap_s)                      # not up yet — retry
 
-            def _record(ok, chosen_slot, msg):
+            def _record(secured, chosen_slot, msg):
                 """One structured summary line + a persisted outcome, so a
                 triggered run's result is visible in logs AND trackable across
-                nights (drop-outcomes.jsonl)."""
+                nights (drop-outcomes.jsonl). `secured` = did we book / would-book
+                a slot? (Distinct from the CLI's exit-ok = 'ran without error'.)"""
                 outcome = {
                     "ts": dt.datetime.now(ZoneInfo(target.drop.timezone)).isoformat(),
                     "target": target.key, "target_date": target_date,
                     "drop_local": drop_local, "after_time": after_time,
                     "skew": round(skew, 3), "attempts": attempts,
-                    "dry_run": dry_run, "ok": ok,
+                    "dry_run": dry_run, "secured": secured,
                     "chosen": (f"{chosen_slot.time} {chosen_slot.court}"
                                if chosen_slot else None),
                     "message": msg,
