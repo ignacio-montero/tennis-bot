@@ -56,7 +56,16 @@ _Last updated: 2026-07-16. For how to run it and the operational gotchas see
    D+7* — **dry-run, no hold**. Verified end-to-end on the box (login→skew→
    spin-wait fired at the instant→grid parse→outcome persisted→watchd restarted).
    Runbook/compose live in the homelab repo (`services/tennisbot-drop/`).
-   **Graduation path:**
+   **⚠️ BLOCKER before graduating: resolve the "no ≥19:00 slot" finding.** Both
+   dry-runs (23 & 24 Jul) found *no evening availability* at 00:45 — and evening
+   is exactly the `want` target. Image `0.2.1` (deployed 2026-07-17) adds
+   `drop.grid all_times` + `timetable.debug` so the next clean 00:41 run shows
+   whether 18:00–21:00 are in the grid at all: if present-but-booked → contention
+   (fine, fire at 00:00); if absent → the parser mis-reads them (availability
+   keys on the CSS `success` class — likely a fix needed). Do NOT go `--live`
+   until this is settled. (Diagnosing via midday manual runs hit EA
+   login-throttling; rely on the scheduled run instead.)
+   **Graduation path (once unblocked):**
    a. Watch 1–2 nights of the 00:41 dry-run (Telegram `🎾 DRY-RUN`, or
       `ssh homelab 'tail ~/homelab/services/tennisbot-drop/logs/cron.log'`, or
       the `drop-outcomes.jsonl` volume). Expect a "would book 19:00+" now that

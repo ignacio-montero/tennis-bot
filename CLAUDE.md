@@ -111,13 +111,21 @@ Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
 the drop instant, then camps through overload within `--retry-window` (90s
 default). **Drop time confirmed: 00:00:00 London on D−7** (21 & 23 Jul flipped
 open within ~20 s of midnight; see DECISIONS.md).
-- **Now running as `tennisbot-drop` on the homelab** (image `0.2.0`, shared with
+- **Now running as `tennisbot-drop` on the homelab** (image `0.2.1`, shared with
   watchd; `profiles:[drop]` so it's one-shot, not a daemon). Fired by nacho's
   **crontab** at 00:41 London via `run-drop.sh`, which stops watchd for the run
   then restarts it (one-session rule). **Dry-run** (`--after 19:00`, no `--live`)
   — books nothing yet. Graduation: 00:41→00:00 instant→`DROP_LIVE=1`. Full path
   + check commands in `docs/NEXT_STEPS.md`; compose/runbook in the homelab repo
   `services/tennisbot-drop/`.
+- ⚠️ **OPEN QUESTION (2026-07-17): no ≥19:00 availability at 00:45** — both
+  rehearsals found evening slots (our actual `want` targets) missing 45 min
+  after the drop. Either they sell out fast (→ validates firing at 00:00) or the
+  parser mis-reads them (`available` keys on the CSS `success` class). 0.2.1
+  adds `drop.grid all_times` + `timetable.debug` so tonight's clean run shows
+  whether 18:00–21:00 exist in the grid. Don't graduate to `--live` until this
+  is resolved. (Midday manual probes to check hit EA login-throttling — avoid
+  repeated manual logins.)
 - New drop flags: `drop --after HH:MM` (earliest available court at/after a time,
   any court) and a midnight-rollover-safe target date (`_next_drop`). Outcomes
   persist to `drop-outcomes.jsonl` under `$DROP_STATE_DIR`.
