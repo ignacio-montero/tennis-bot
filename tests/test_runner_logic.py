@@ -88,3 +88,40 @@ def test_after_time_none_available_returns_empty():
     chosen = choose_court_slots(slots, _target(False), want_time=None,
                                 after_time="19:00")
     assert chosen == []
+
+
+# ── drop-loop sidecar (self-scheduling trigger) ─────────────────────────────
+def test_drop_loop_advances_one_night_and_never_refires(monkeypatch):
+    # The sidecar must book once per night and always schedule strictly forward
+    # (a re-fire would hammer EA at the same instant). Reuses runner._next_drop.
+    import time as _t
+    from tennisbot import runner
+    monkeypatch.setattr(runner, "load_targets", lambda: {"paddington": _target(False)})
+    monkeypatch.setattr(_t, "sleep", lambda *a, **k: None)
+    fired = []
+    monkeypatch.setattr(runner, "run_drop", lambda **k: fired.append(k))
+    scheduled = []
+    real = runner._next_drop
+    monkeypatch.setattr(runner, "_next_drop",
+                        lambda *a, **k: scheduled.append(real(*a, **k)) or scheduled[-1])
+
+    runner.run_drop_loop(target_key="paddington", max_iters=3, notify=False)
+
+    assert len(fired) == 3
+    dates = [target_date for (_instant, target_date) in scheduled]
+    assert dates[0] < dates[1] < dates[2]        # strictly forward, no re-fire
+
+
+def test_drop_loop_survives_a_failing_night(monkeypatch):
+    # A raised booking must be caught so the loop keeps scheduling later nights.
+    import time as _t
+    from tennisbot import runner
+    monkeypatch.setattr(runner, "load_targets", lambda: {"paddington": _target(False)})
+    monkeypatch.setattr(_t, "sleep", lambda *a, **k: None)
+    calls = {"n": 0}
+    def boom(**k):
+        calls["n"] += 1
+        raise RuntimeError("EA login flaked")
+    monkeypatch.setattr(runner, "run_drop", boom)
+    runner.run_drop_loop(target_key="paddington", max_iters=2, notify=False)
+    assert calls["n"] == 2          # did not abort after the first failure

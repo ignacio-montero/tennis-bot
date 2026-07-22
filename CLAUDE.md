@@ -106,18 +106,20 @@ Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
   (cron, Task Scheduler, EventBridge) at the same `scheduled_run.sh` / CLI — no
   booking-logic changes. Code lives in `deploy/`.
 
-## Court-drop scheduler — REHEARSAL DEPLOYED on the homelab (dry-run) ✅⏳ (2026-07-16)
+## Court-drop booker — SIDECAR built, awaiting deploy (dry-run) ✅⏳ (2026-07-22)
 `tennisbot drop` pre-warms a session, measures server-clock skew, spin-waits to
 the drop instant, then camps through overload within `--retry-window` (90s
 default). **Drop time confirmed: 00:00:00 London on D−7** (21 & 23 Jul flipped
 open within ~20 s of midnight; see DECISIONS.md).
-- **Now running as `tennisbot-drop` on the homelab** (image `0.2.1`, shared with
-  watchd; `profiles:[drop]` so it's one-shot, not a daemon). Fired by nacho's
-  **crontab** at 00:41 London via `run-drop.sh`, which stops watchd for the run
-  then restarts it (one-session rule). **Dry-run** (`--after 19:00`, no `--live`)
-  — books nothing yet. Graduation: 00:41→00:00 instant→`DROP_LIVE=1`. Full path
-  + check commands in `docs/NEXT_STEPS.md`; compose/runbook in the homelab repo
-  `services/tennisbot-drop/`.
+- **Runs as the `tennisbot-drop` sidecar** — `tennisbot drop-loop`, a
+  long-running container (`restart: unless-stopped`) that sleeps to ~00:00−lead,
+  books once, and loops. **Replaced the earlier cron rehearsal** (`run-drop.sh` +
+  nacho's crontab): no host cron, no Docker socket, TZ-aware so no DST edits;
+  deploys with the same `docker compose up -d` as watchd. The one-session rule is
+  the watchd **23:53–00:07 in-image blackout** (0.3.0), not an external
+  stop/start. **Dry-run** (`--after 19:00`, no `--live`) — add `--live` to the
+  compose command to book. Branches `claude/drop-sidecar-trigger` (both repos),
+  unpushed; handover + runbook in `docs/NEXT_STEPS.md` / `deploy/docker/DROP.md`.
 - ✅ **RESOLVED (2026-07-22 clean run): evening slots DO exist and parse
   correctly.** The old "no ≥19:00 availability at 00:45" worry is closed. The
   0.2.1 full-grid log for D+7 = 29 Jul showed Synth 08:00–17:00 only but

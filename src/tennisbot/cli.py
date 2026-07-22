@@ -90,6 +90,23 @@ def main(argv: list[str] | None = None) -> int:
     wd.add_argument("--no-notify", action="store_true")
     wd.add_argument("--headed", action="store_true")
 
+    dl = sub.add_parser("drop-loop", help="Self-scheduling nightly drop booker "
+                        "(the homelab sidecar; one drop per night).")
+    dl.add_argument("--centre", default="paddington")
+    dl.add_argument("--want-time", help="Book this HH:MM (else ranked prefs).")
+    dl.add_argument("--after", help="Book earliest available court at/after this "
+                    "HH:MM, any court (overrides ranked prefs).")
+    dl.add_argument("--lead-min", type=float, default=3.0,
+                    help="Minutes before the drop to wake and pre-warm.")
+    dl.add_argument("--live", action="store_true",
+                    help="Create real holds (default dry-run, like `drop`).")
+    dl.add_argument("--epsilon", type=float, default=0.15)
+    dl.add_argument("--retry-window", type=float, default=90.0)
+    dl.add_argument("--retry-gap", type=float, default=1.0)
+    dl.add_argument("--max-iters", type=int, help="Stop after N nights (testing).")
+    dl.add_argument("--no-notify", action="store_true")
+    dl.add_argument("--headed", action="store_true")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "discover":
@@ -123,6 +140,16 @@ def main(argv: list[str] | None = None) -> int:
                    coarse_secs=args.coarse, fine_secs=args.fine,
                    hot_windows=args.hot, notify=not args.no_notify,
                    headless=not args.headed, max_cycles=args.max_cycles)
+        return 0
+
+    if args.cmd == "drop-loop":
+        from .runner import run_drop_loop
+        run_drop_loop(target_key=args.centre, want_time=args.want_time,
+                      after_time=args.after, lead_min=args.lead_min,
+                      dry_run=not args.live, notify=not args.no_notify,
+                      headless=not args.headed, max_iters=args.max_iters,
+                      epsilon=args.epsilon, retry_window_s=args.retry_window,
+                      retry_gap_s=args.retry_gap)
         return 0
 
     if args.cmd == "run-now":

@@ -1,7 +1,25 @@
 # Tennis-Bot — Status & next steps
 
-_Last updated: 2026-07-16. For how to run it and the operational gotchas see
+_Last updated: 2026-07-22. For how to run it and the operational gotchas see
 [../CLAUDE.md](../CLAUDE.md); for future ideas see [BACKLOG.md](BACKLOG.md)._
+
+## ⏭️ UPDATE 2026-07-22 — trigger switched to a self-scheduling sidecar
+
+The cron-fired rehearsal below is **superseded**. The nightly booker is now a
+long-running `drop-loop` **sidecar** (deploys like watchd; no host crontab, no
+Docker socket, and TZ-aware so no DST edits). **All the booking logic from the
+rehearsal is kept** — only the trigger changed (see DECISIONS.md 2026-07-22).
+Built on branches `claude/drop-sidecar-trigger` (both tennis-bot + homelab),
+not yet pushed. Handover (Mac/admin session):
+1. Push both branches + merge; `git tag v0.3.0 && git push origin v0.3.0` → CI
+   builds `…/tennisbot-watchd:0.3.0`.
+2. Deploy: create the drop `.env` on the server, then `git pull &&
+   docker compose pull tennisbot-drop tennisbot-watchd && docker compose up -d
+   tennisbot-drop tennisbot-watchd`. Runbook: [../deploy/docker/DROP.md](../deploy/docker/DROP.md).
+3. To retire the old path, remove nacho's `tennisbot-drop` crontab line if it
+   was ever installed (`crontab -e`).
+Still dry-run (`--after 19:00`); watch a night, then add `--live` to the compose
+command. The rehearsal notes below stay as booking-behaviour reference.
 
 ## What works today ✅
 
