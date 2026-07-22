@@ -118,17 +118,18 @@ open within ~20 s of midnight; see DECISIONS.md).
   — books nothing yet. Graduation: 00:41→00:00 instant→`DROP_LIVE=1`. Full path
   + check commands in `docs/NEXT_STEPS.md`; compose/runbook in the homelab repo
   `services/tennisbot-drop/`.
-- ⚠️ **OPEN QUESTION (2026-07-17): no ≥19:00 availability at 00:45** — both
-  rehearsals found evening slots (our actual `want` targets) missing 45 min
-  after the drop. Either they sell out fast (→ validates firing at 00:00) or the
-  parser mis-reads them (`available` keys on the CSS `success` class). 0.2.1
-  adds `drop.grid all_times` + `timetable.debug` so tonight's clean run shows
-  whether 18:00–21:00 exist in the grid. Don't graduate to `--live` until this
-  is resolved. (Midday manual probes to check hit EA login-throttling — avoid
-  repeated manual logins.)
+- ✅ **RESOLVED (2026-07-22 clean run): evening slots DO exist and parse
+  correctly.** The old "no ≥19:00 availability at 00:45" worry is closed. The
+  0.2.1 full-grid log for D+7 = 29 Jul showed Synth 08:00–17:00 only but
+  **Tarmac 18:00 + 20:00 still available** at 00:45; `--after 19:00` correctly
+  secured `20:00 Tennis Court 5` (dry-run). Earlier "no evening" reads were
+  surface-specific + the pre-0.2.1 parser blind spot, not a real absence.
+  Graduating to `--live` is now a go/no-go call, not a blocker (see NEXT_STEPS).
 - New drop flags: `drop --after HH:MM` (earliest available court at/after a time,
-  any court) and a midnight-rollover-safe target date (`_next_drop`). Outcomes
-  persist to `drop-outcomes.jsonl` under `$DROP_STATE_DIR`.
+  any court) and a midnight-rollover-safe target date (`_next_drop`). ⚠️ Outcomes
+  are *meant* to persist to `drop-outcomes.jsonl` under `$DROP_STATE_DIR`, but as
+  of 2026-07-22 the `tennisbot-drop-state` volume is empty — the jsonl isn't
+  actually written (minor, non-blocking; cron.log is the source of truth).
 - The old Mac **launchd** drop job is abandoned (homelab is the target); its
   disabled plist template stays in `deploy/launchd/` for reference only.
 

@@ -50,26 +50,29 @@ _Last updated: 2026-07-16. For how to run it and the operational gotchas see
 ## Recommended next steps
 
 1. **Drop rehearsal DEPLOYED on the homelab (2026-07-16), dry-run.** Service
-   `tennisbot-drop` (image `0.2.0`, `profiles:[drop]`) is cron-fired at **00:41
+   `tennisbot-drop` (image `0.2.1`, `profiles:[drop]`) is cron-fired at **00:41
    London** (`41 23 * * *` UTC) by `run-drop.sh`, which stops watchd for the run
    and restarts it after (one-session rule), then books *any court ≥19:00 on
    D+7* — **dry-run, no hold**. Verified end-to-end on the box (login→skew→
-   spin-wait fired at the instant→grid parse→outcome persisted→watchd restarted).
+   spin-wait fired at the instant→grid parse→outcome→watchd restarted).
    Runbook/compose live in the homelab repo (`services/tennisbot-drop/`).
-   **⚠️ BLOCKER before graduating: resolve the "no ≥19:00 slot" finding.** Both
-   dry-runs (23 & 24 Jul) found *no evening availability* at 00:45 — and evening
-   is exactly the `want` target. Image `0.2.1` (deployed 2026-07-17) adds
-   `drop.grid all_times` + `timetable.debug` so the next clean 00:41 run shows
-   whether 18:00–21:00 are in the grid at all: if present-but-booked → contention
-   (fine, fire at 00:00); if absent → the parser mis-reads them (availability
-   keys on the CSS `success` class — likely a fix needed). Do NOT go `--live`
-   until this is settled. (Diagnosing via midday manual runs hit EA
-   login-throttling; rely on the scheduled run instead.)
+   **✅ BLOCKER RESOLVED (2026-07-22 clean run).** The 00:41 dry-run for D+7 =
+   29 Jul fired at 00:45:00 (lateness 0 ms) and the 0.2.1 full-grid logging
+   settled the "no ≥19:00 slot" question: evening slots **do exist and are
+   parsed correctly** — Synth showed 08:00–17:00 only, but **Tarmac had 18:00
+   and 20:00 still available** at 00:45, and `--after 19:00` correctly picked
+   `20:00 Tennis Court 5` (`drop.secured`, dry-run). So the earlier "no evening
+   availability" was surface-specific + the pre-0.2.1 parser blind spot, not a
+   real absence. The machinery is sound; graduation is now a go/no-go decision,
+   not a blocker.
    **Graduation path (once unblocked):**
-   a. Watch 1–2 nights of the 00:41 dry-run (Telegram `🎾 DRY-RUN`, or
-      `ssh homelab 'tail ~/homelab/services/tennisbot-drop/logs/cron.log'`, or
-      the `drop-outcomes.jsonl` volume). Expect a "would book 19:00+" now that
-      it targets a freshly-dropped D+7.
+   a. Watch 1–2 nights of the 00:41 dry-run via Telegram `🎾 DRY-RUN` or
+      `ssh homelab 'tail ~/homelab/services/tennisbot-drop/logs/cron.log'`.
+      Expect a "would book 19:00+" (the 2026-07-22 run already produced one).
+      ⚠️ **Known gap:** `drop-outcomes.jsonl` is NOT actually being written —
+      the `tennisbot-drop-state` volume is empty despite `drop.result` logging.
+      The cron.log is the source of truth for now; the jsonl persistence needs
+      a fix (minor, non-blocking; likely `DROP_STATE_DIR` write path).
    b. Move to the **real 00:00** instant: swap the crontab line to the
       `DROP_TIME=00:00` / `56 22 * * *` UTC variant (in `crontab.example`),
       still dry-run, for a couple more nights.
