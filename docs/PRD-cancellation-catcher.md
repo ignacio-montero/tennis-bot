@@ -77,7 +77,8 @@ must build on these facts, not re-litigate them:
 ### 4.1 Cancellation Catcher (new service)
 - [ ] A self-scheduling **sidecar** (same pattern as `tennisbot-drop`: long-run
       container, `restart: unless-stopped`, no host cron, no Docker socket) that
-      wakes on an interval (**default 30 min**), scans, books if matched, sleeps.
+      wakes every **30 min** (agreed — balances catching cancellations promptly
+      against being polite to EA), scans, books if matched, sleeps.
 - [ ] Scans the **whole open window (D0–D+7)** for the configured centre(s),
       applying the day/time preferences via the native search filters, and reads
       the week grid to find free (date, time) slots that match.
@@ -92,7 +93,12 @@ must build on these facts, not re-litigate them:
       approach; the Architect decides whether it shares the existing blackout
       windows or needs its own.
 - [ ] Telegram on **book** (with screenshot + pay prompt) and on **error**.
-      Poll cycles that find nothing are **silent** (no per-cycle noise).
+      Poll cycles that find nothing are **silent** (no per-cycle noise). Plus
+      **one daily heartbeat** (like watchd's 09:00 "alive"), so silence never
+      means "dead".
+- [ ] **Lapsed-hold re-booking** per the rule in 4.4 — a hold I never pay for
+      is re-grabbed a bounded number of times, more persistently if it was held
+      overnight while I was asleep.
 
 ### 4.2 Telegram-configurable preferences (governs BOTH jobs)
 - [ ] Set from Telegram, persisted to a shared store, read by both the catcher
@@ -119,6 +125,25 @@ must build on these facts, not re-litigate them:
 > the cap means the catcher must **read Manage Bookings** to count this week's
 > paid courts before booking. "Paid" is observable (the existing `has_booking`
 > already distinguishes paid vs held); the mechanic is the Architect's to spec.
+
+### 4.4 Lapsed-hold re-booking (agreed semantics)
+An unpaid hold lapses after ~1 hour. If I haven't paid, the slot frees again —
+and whether the catcher should re-grab it depends on **whether I was awake to
+pay**:
+
+- **Daytime holds (first held 09:00–23:00 London):** re-book the same slot **at
+  most once**, then leave it for that day. If I ignored one re-hold while awake,
+  I don't want it.
+- **Overnight holds (first held after 23:00 London):** **keep re-booking every
+  cycle until 09:00** the next morning. A hold made at 23:30 lapses at ~00:30
+  while I'm asleep; persistent re-holding keeps the slot mine until I'm up to
+  pay. After 09:00 the daytime rule takes over (one more re-hold, then release).
+
+> **Seam (teach):** this needs **per-slot memory across cycles** — for each slot
+> it holds, the catcher must remember *when it first held it* and *how many times
+> it has re-booked*, surviving restarts. That's more state than "did I already
+> book this date" (a yes/no); it's the second concrete thing (after shared
+> config) pushing the design toward a real state store, not in-memory flags.
 
 ## 5. Explicitly out of scope (deliberately)
 
@@ -172,6 +197,12 @@ must build on these facts, not re-litigate them:
 - [ ] The cap counter **resets on Monday**.
 - [ ] A crash in one cycle does not kill the loop (it logs, notifies, continues)
       — same resilience as `run_drop_loop`.
+- [ ] A daytime lapsed hold (first held 09:00–23:00) is re-booked **at most
+      once**, then not again that day.
+- [ ] An overnight lapsed hold (first held after 23:00) is re-booked **every
+      cycle until 09:00**, then reverts to the daytime rule.
+- [ ] A **daily heartbeat** Telegram is sent once per day even when nothing is
+      booked.
 - [ ] Per-cycle EA load stays at ~1 search + ≤2 grid opens per centre (no
       per-date/per-surface fan-out).
 - [ ] The service holds **no open ports** and never stacks a second EA session
@@ -191,29 +222,33 @@ must build on these facts, not re-litigate them:
 - [ ] Ships **dry-run**; `--live` is a separate, deliberate flip after watching.
 - [ ] No secret ever leaves the server; config store lives on a volume, not git.
 
-## 8. Open questions (for the Architect / me to resolve)
+## 8. Resolved decisions (2026-07-23)
 
-1. **Lapsed-hold re-booking.** If the catcher holds a slot and I never pay (hold
-   expires), should a later cycle re-book the same slot, or leave it? Re-booking
-   is "helpful" but risks a loop on a slot I'm ignoring on purpose. *Leaning:
-   re-book at most once, then leave it for that day.*
-2. **Notification cadence.** Book + error are in. Do we also want a **daily
-   heartbeat** (like watchd's 09:00 "alive")? *Leaning: yes, one/day, so silence
-   never means "dead".*
-3. **Drop ↔ catcher overlap.** If the catcher already held next Saturday from a
-   cancellation, the midnight drop should skip Saturday — the shared cap + the
+- **Lapsed-hold re-booking** → §4.4: once/day in daytime; persistent until 09:00
+  for overnight holds.
+- **Daily heartbeat** → **yes**, one/day (folded into 4.1).
+- **Interval** → **30 min**, fixed (not Telegram-settable in MVP — keeps scope
+  tight; changeable in config if it ever needs tuning).
+
+## 9. Open questions (for the Architect)
+
+1. **Does the catcher absorb watchd, or coexist?** watchd's drop-time mission is
+   done and the catcher overlaps its "watch availability" role. **Owner leans to
+   a single service** (catcher absorbs watchd — keeping the regression-detector +
+   heartbeat roles), but wants to settle it with the Architect. This is the
+   first architectural decision to make; much else hangs off it.
+2. **Drop ↔ catcher overlap.** If the catcher already held next Saturday from a
+   cancellation, the midnight drop must skip Saturday — the shared cap + the
    `has_booking` idempotency check should cover this, but confirm no double-hold.
-4. **Config schema & inbound Telegram transport** — long-poll vs webhook, and
-   the store's shape/location. *Architect's call; long-poll preferred to keep
-   "no open ports".*
-5. **Does retiring watchd change anything here?** watchd's drop-time mission is
-   done; the catcher partly overlaps its "watch availability" role. Decide
-   whether the catcher **absorbs** watchd (one service) or they coexist.
-6. **Interval default.** 30 min proposed. Faster catches cancellations sooner
-   but adds load; slower is politer. Is 30 min the right default, and should it
-   be Telegram-settable too?
+3. **Config schema & inbound Telegram transport** — long-poll vs webhook, and
+   the store's shape/location. Long-poll preferred to keep "no open ports". The
+   schema becomes the `API_SPEC.md` contract between the Telegram handler and
+   both jobs.
+4. **State store** — §4.4 (per-slot re-book memory) and §4.3 (weekly paid count)
+   both need durable per-slot/per-week state surviving restarts. Decide its shape
+   and whether it's the same store as the shared config.
 
-## 9. Handoff
+## 10. Handoff
 
 When this scope is agreed, the natural next step is the **Architect persona**:
 design the shared config store + inbound-Telegram transport, the week-grid
