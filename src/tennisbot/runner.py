@@ -157,6 +157,10 @@ def _run_court(page, ctx, prov, target, target_date, dry_run, want_time, tg,
                after_time=None):
     SHOTS.mkdir(exist_ok=True)
     notes: list[str] = []
+    # Diagnosis carriers (see RunResult): getting INTO a grid at all is what
+    # distinguishes "the drop hasn't happened" from "it happened and I lost".
+    grid_seen = False
+    n_avail_max = 0
     for surface in target.courts.ordered():
         prov.go_home(page)
         prov.search(page, site=target.site, group=target.courts.group,
@@ -171,6 +175,9 @@ def _run_court(page, ctx, prov, target, target_date, dry_run, want_time, tg,
         slots = prov.parse_timetable(page, target_date)
         avail_times = sorted({s.time for s in slots if s.available})
         all_times = sorted({s.time for s in slots})
+        # We reached a real timetable => the row was NOT Full => released.
+        grid_seen = True
+        n_avail_max = max(n_avail_max, len(avail_times))
         log.info("drop.grid", surface=surface.label, date=target_date,
                  n_slots=len(slots), n_avail=len(avail_times),
                  avail_times=avail_times, all_times=all_times)
@@ -192,7 +199,8 @@ def _run_court(page, ctx, prov, target, target_date, dry_run, want_time, tg,
             tg.send_photo(shot, caption=f"{target.name} {surface.label} {target_date}")
             return RunResult(ok=True, dry_run=True,
                              message=f"would book {surface.label} {desc}",
-                             chosen=chosen[0], screenshot_path=shot)
+                             chosen=chosen[0], screenshot_path=shot,
+                             grid_seen=grid_seen, n_avail=n_avail_max)
 
         # LIVE: hold the first slot, then (2h) the second.
         page.click(chosen[0].selector)
@@ -213,12 +221,14 @@ def _run_court(page, ctx, prov, target, target_date, dry_run, want_time, tg,
                 f"💳 Open the Everyone Active app to pay (1-hour hold).")
         tg.send_photo(hold_shot, caption="Unpaid hold — pay in the app")
         return RunResult(ok=True, dry_run=False, message=f"held {surface.label} {desc}",
-                         chosen=chosen[0], screenshot_path=hold_shot)
+                         chosen=chosen[0], screenshot_path=hold_shot,
+                         grid_seen=grid_seen, n_avail=n_avail_max)
 
     tg.send(f"🎾 {target.name} {target_date}: nothing booked.\n"
             f"{'; '.join(notes) or 'no surfaces enabled'}")
     return RunResult(ok=True, dry_run=dry_run, message="no preferred slot; "
-                     + "; ".join(notes))
+                     + "; ".join(notes),
+                     grid_seen=grid_seen, n_avail=n_avail_max)
 
 
 # ── activity mode ─────────────────────────────────────────────────────────────
@@ -291,6 +301,40 @@ def _run_activity(page, ctx, prov, target, target_date, dry_run, activity_label,
     return RunResult(ok=True, dry_run=dry_run, message="no activity slot")
 
 
+def diagnose_drop_failure(grid_seen: bool, n_avail: int,
+                          after_time: str | None = None,
+                          want_time: str | None = None) -> tuple[str, str]:
+    """Why did a drop secure nothing? Returns (code, human-readable reason).
+
+    A single read can't tell us: `row_full` means BOTH "not released yet" and
+    "released but sold out" (see CLAUDE.md). What disambiguates is whether we
+    ever got INTO a timetable across the whole camp window — a row that stays
+    Full for ~90s of retries did not open at all, whereas a grid we could read
+    means the drop happened and we simply didn't secure anything from it.
+
+    - `never_opened`      → the release did NOT happen at this instant. This is
+                            the signal that the drop time may have moved, and
+                            the one that warrants re-running the watcher.
+    - `sold_out`          → released, but every slot was gone by the time we
+                            parsed the grid. We lost the race.
+    - `prefs_too_narrow`  → released, slots WERE free, but none matched the
+                            filter. Not a race loss — a configuration problem.
+    """
+    if not grid_seen:
+        return ("never_opened",
+                "row stayed Full for the whole window — the courts never "
+                "opened. The drop time may have moved; re-run the watcher.")
+    if n_avail == 0:
+        return ("sold_out",
+                "grid opened but 0 slots were free — everything was taken "
+                "before we could parse it. Lost the race.")
+    filt = (f"after {after_time}" if after_time
+            else f"want {want_time}" if want_time else "ranked prefs")
+    return ("prefs_too_narrow",
+            f"grid opened with {n_avail} free slot(s), but none matched "
+            f"({filt}). Widen the filter, not the timing.")
+
+
 # ── timed court-drop entrypoint ────────────────────────────────────────────────
 def run_drop(target_key: str = "paddington", dry_run: bool = True,
              headless: bool = True, want_time: str | None = None,
@@ -336,6 +380,10 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
             deadline = _time.time() + retry_window_s
             attempts = 0
             result = None
+            # Accumulate across the WHOLE camp window, not just the last read:
+            # one attempt landing mid-postback shouldn't decide the diagnosis.
+            ever_grid_seen = False
+            best_avail = 0
             while _time.time() < deadline:
                 attempts += 1
                 try:
@@ -345,12 +393,14 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
                     log.warn("drop.attempt_failed", n=attempts, err=str(e)[:120])
                     _time.sleep(retry_gap_s)
                     continue
+                ever_grid_seen = ever_grid_seen or result.grid_seen
+                best_avail = max(best_avail, result.n_avail)
                 if result.chosen is not None:                # secured / would-book
                     log.info("drop.secured", attempts=attempts)
                     break
                 _time.sleep(retry_gap_s)                      # not up yet — retry
 
-            def _record(secured, chosen_slot, msg):
+            def _record(secured, chosen_slot, msg, reason_code=None):
                 """One structured summary line + a persisted outcome, so a
                 triggered run's result is visible in logs AND trackable across
                 nights (drop-outcomes.jsonl). `secured` = did we book / would-book
@@ -364,6 +414,11 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
                     "chosen": (f"{chosen_slot.time} {chosen_slot.court}"
                                if chosen_slot else None),
                     "message": msg,
+                    # Diagnosis, so a run of bad nights is queryable from the
+                    # jsonl: all `never_opened` = the drop moved; all
+                    # `sold_out` = we're just too slow.
+                    "grid_seen": ever_grid_seen, "n_avail": best_avail,
+                    "reason_code": reason_code,
                 }
                 log.info("drop.result", **outcome)
                 _append_drop_outcome(outcome)
@@ -388,9 +443,15 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
                             pass
                 return result
 
-            _record(False, None, "no slot after retries")
+            code, reason = diagnose_drop_failure(ever_grid_seen, best_avail,
+                                                 after_time, want_time)
+            log.info("drop.diagnosis", code=code, grid_seen=ever_grid_seen,
+                     n_avail=best_avail, reason=reason)
+            _record(False, None, f"no slot after retries — {reason}",
+                    reason_code=code)
             tg.send(f"🎾 {target.name} court drop {drop_local}: no slot secured "
-                    f"after {attempts} attempts / {retry_window_s:.0f}s.")
+                    f"after {attempts} attempts / {retry_window_s:.0f}s.\n"
+                    f"<b>Why:</b> {reason}")
             return result or RunResult(ok=False, dry_run=dry_run,
                                        message="no slot after retries")
         except Exception as e:
