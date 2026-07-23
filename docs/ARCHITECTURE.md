@@ -487,3 +487,158 @@ attempt to forge issuer authentication. Those are fraud and we won't build them.
 - **ToS** — periodically re-check each platform's terms; keep behaviour
   personal-scale and polite.
 ```
+
+---
+
+## 8. Cancellation Catcher + Telegram-configurable prefs (subsystem)
+
+_Feature scope: [PRD-cancellation-catcher.md](PRD-cancellation-catcher.md).
+Contract: [API_SPEC.md](API_SPEC.md). Added 2026-07-23/24 (Architect pass)._
+
+A second booking pathway alongside the midnight drop: instead of racing at a
+known instant, **poll the whole open window (D0–D+7) every 30 min and grab
+cancellations** that match preferences — and let those preferences be set from
+Telegram, governing **both** this catcher and the drop sprinter.
+
+### 8.1 Components after this lands (three, split by timescale)
+
+| Component | Timescale | Books? | Notes |
+|---|---|---|---|
+| `tennisbot-drop` (**sprinter**) | sub-second race at 00:00 D−7 | yes | unchanged pattern; now reads shared config (day-filtered — see 8.6) |
+| **catcher** (new, *absorbs* watchd) | 30-min poll of D0–D+7 | yes | the polling service; also inherits watchd's observer duties |
+| Mac `launchd` activity jobs | fixed Wed/Sun times | yes | out of scope, untouched |
+
+**Decision — the catcher absorbs watchd (one service, not two).** watchd's
+original mission (find the drop time) is complete; its residual roles
+(regression detection + heartbeat) are a near-free byproduct of the catcher's
+own D+7 scan. Chosen for one fewer service, one fewer EA-session consumer, and
+no redundant scans. Cost: watchd's read-only *invariant* (it structurally
+**cannot** book) weakens to a code-structure guarantee, since the observer logic
+now lives in a booking-capable process. Accepted at single-user scale — a
+spurious hold lapses in ~1h and doesn't count toward the paid cap.
+
+### 8.2 EA access model (validated by live probe 2026-07-23)
+
+The design rests on two probed facts, not assumptions:
+
+- The EA search form filters **server-side** by `Include Days` (Mon–Sun) and
+  `Preferred Times` (Morning/Afternoon/Evening buckets).
+- One search + one grid-open returns a **whole-week grid** for a surface
+  (`mrmResourceStatus.aspx`: rows = times, cols = the 7 dates, cells =
+  Available/Not-Available). So a full-window scan of one centre is ~1 search +
+  ≤2 grid opens per cycle — *fewer page loads than watchd does today*.
+
+**Two-stage filter** (the key pattern): push the coarse cut — `days` +
+time-bucket — into EA's own form (Stage 1, server-side, keeps the scan cheap),
+then apply the exact `earliest`/`latest` predicate over the returned grid
+(Stage 2, client-side). Standard "push down what the API supports, filter the
+rest locally".
+
+**Build cost:** the week grid is a *different page* from the single-date
+courts×times grid the current `parse_timetable` handles, and it exposes
+availability per (date, time) but **not per court**. So the catcher needs a
+**new week-grid parser** for *detection*, then drills a chosen (date, time) into
+the **existing single-date booking flow** (`_run_court` → court pick →
+`_commit_hold`) to *book*. That detect→book seam is the main new build.
+
+### 8.3 Regression detection (watchd's role, done right)
+
+The signal is **not** court volume ("lots of courts in D+7" fires on every
+*normal* drop). It is the **timing of the D+7 closed→open transition**, and it
+is classified by combining the catcher's daytime observation with the sprinter's
+0.3.1 `never_opened` diagnosis:
+
+| Sprinter (00:00) | Catcher (daytime D+7 scans) | Verdict |
+|---|---|---|
+| booked / `sold_out` | D+7 was open | ✅ normal — drop at midnight |
+| `never_opened` | D+7 opens later (e.g. 06:15) | ⚠️ **drop moved** — alert |
+| `never_opened` | D+7 never opens all day | 🔴 **drop broken/cancelled** — alert |
+
+**Detect coarse, re-discover fine:** 30-min granularity is enough to *detect* a
+move ("not at midnight anymore"). Pinning the *exact* new time needs watchd's
+20-s fine polling — demoted from 24/7 to a **break-glass tool** re-enabled only
+after a regression fires. The fine-window code is kept, not deleted.
+
+### 8.4 One-session model (unchanged in shape)
+
+One live EA Connect session at a time. The catcher **inherits all of watchd's
+blackouts** — the 23:53–00:07 midnight window (yield to the sprinter) and the
+Wed/Sun windows (yield to the Mac activity jobs) — plus the
+`in_blackout`/`next_blackout_end` skip logic. The sprinter stays privileged
+(yields to nobody). Consumers: sprinter, catcher, Mac jobs = **three** — the
+comfortable ceiling for fixed time-windows. A fourth consumer would justify a
+real inter-process lock; we are not there.
+
+### 8.5 State & config storage (reuse, no new datastore)
+
+The codebase already has both primitives we need, each just a file on a volume:
+
+- **Mutable JSON doc** (the `bracket.json` load/save idiom) → the **shared
+  config** and the **per-slot re-book memory** (§8.7).
+- **Append-only JSONL** (`observations.jsonl`, `drop-outcomes.jsonl`) → booking
+  history / audit.
+
+No SQLite or Redis — that would be gold-plating for a single-user bot writing a
+few small JSON files. (Same file-on-a-volume spirit as Blue Plaque Hunter's
+SQLite volume, one tier simpler; escalate to SQLite only if state ever goes
+relational.)
+
+**New shared volume `tennisbot-config`** — the first shared state in a
+deliberately share-nothing system. The **catcher mounts it read-write** (it owns
+the Telegram handler, the sole writer); the **sprinter mounts it read-only**
+(re-establishing a safety boundary: the sprinter can read prefs but cannot
+corrupt them). Single-writer ⇒ no locking needed; atomic temp-file-rename on
+write for crash safety.
+
+**Telegram handler is co-located inside the catcher process** — single-writer
+safety and "no open ports" (long-poll is outbound) both point the same way. The
+sprinter never touches Telegram-config writes; it only reads the file.
+
+### 8.6 Shared config governs BOTH jobs
+
+The config schema ([API_SPEC.md](API_SPEC.md)) is the contract. Consequence of
+"one set of prefs for both": the **sprinter becomes day-filtered**. The drop
+only ever releases D+7 (a single weekday), so with `days: [Tue, Thu]` the
+sprinter acts only on nights where D+7 is a preferred day and **skips the drop
+otherwise**. Correct (why win a court on an unwanted day?) but a behaviour change
+to record: the sprinter goes from "every night" to "preferred-day eves only".
+
+**Weekly cap** is counted from EA's **Manage Bookings** (authoritative — you may
+book manually too; `has_booking` already distinguishes paid vs held), read at
+cycle start — not from a local counter that could drift. Semantics: paid-only,
+Monday reset, activity jobs excluded, default 3, Telegram-settable.
+
+### 8.7 Lapsed-hold re-booking (per-slot state)
+
+An unpaid hold lapses in ~1h. Re-book policy depends on whether the owner was
+awake to pay:
+
+- First held **09:00–23:00** London → re-book **at most once**, then release for
+  that day.
+- First held **after 23:00** → re-book **every cycle until 09:00** (a 23:30 hold
+  lapses ~00:30 while asleep; keep the slot until the owner is up), then revert
+  to the daytime rule.
+
+Needs **per-slot memory across cycles** (first-held timestamp + re-book count,
+restart-surviving) — held in the mutable-JSON store (§8.5).
+
+### 8.8 Live flip — Telegram-settable, guarded
+
+`live` is a config field, settable from Telegram (owner's choice — convenience
+over a deploy-level barrier). Two guards make it safe:
+
+1. **Confirm handshake on the live *transition only*** (`/live on` → "reply
+   CONFIRM" → enabled). Routine changes stay instant; the speed bump sits only
+   in front of the one consequential action (real holds).
+2. **Mode always surfaced** — the daily heartbeat and read-back lead with
+   **LIVE**/**DRY-RUN**, closing the "invisible persisted state" gap that a
+   Telegram-set flag (vs a git-visible compose flag) otherwise opens.
+
+Underlying net unchanged: every live booking is hold-and-notify — immediately
+visible, lapses in ~1h if unpaid. Bounded blast radius.
+
+### 8.9 Notifications
+
+Book (screenshot + pay prompt) and error → notify. Empty poll cycles → silent.
+Plus **one daily heartbeat** (watchd's 09:00 "alive"), always stating the mode
+and current config summary, so silence never means "dead".

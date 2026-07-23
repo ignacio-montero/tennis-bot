@@ -122,3 +122,57 @@ discussion of the architectural ones lives in
   rather than anecdotal. Rejected: inferring from the `notes` strings
   `_run_court` already builds — parsing prose is fragile and the counts were
   being thrown away anyway.
+
+## Cancellation Catcher + Telegram config — architecture decisions (2026-07-24)
+Feature scope in [PRD-cancellation-catcher.md](PRD-cancellation-catcher.md);
+full design in [ARCHITECTURE.md §8](ARCHITECTURE.md); contract in
+[API_SPEC.md](API_SPEC.md). The load-bearing calls, with rationale + what we
+rejected:
+
+- **Catcher absorbs watchd (one polling service, not two).** watchd's drop-time
+  mission is complete; its residual roles (regression detect + heartbeat) fall
+  out of the catcher's own D+7 scan for near-free. Buys one fewer service and
+  one fewer EA-session consumer. *Rejected:* coexist — keeps watchd's read-only
+  *invariant* (it structurally cannot book), but pays a redundant scan and a
+  third session consumer for a service whose main job is done. At single-user
+  scale a spurious hold lapses in ~1h and doesn't touch the paid cap, so the
+  weakened invariant is acceptable.
+- **Regression signal = D+7 closed→open *timing*, not court volume.** "Lots of
+  courts in D+7" is the signature of a *normal* drop and would false-positive
+  nightly. Classified by combining the catcher's daytime D+7 observation with
+  the sprinter's 0.3.1 `never_opened` diagnosis (moved vs broken). Fine 20-s
+  re-discovery demoted from 24/7 to a break-glass tool. *Rejected:* volume
+  heuristic (noisy); always-on fine polling (unnecessary once the time is known).
+- **Preferences are Telegram-set and govern BOTH jobs.** One config document,
+  shared. *Consequence accepted:* config leaves git (lose the `git log` audit
+  trail) and becomes the first shared mutable state; and the **sprinter becomes
+  day-filtered** — it skips the drop on nights where D+7 isn't a preferred day.
+- **Persistence reuses existing JSON-on-a-volume patterns; no new datastore.**
+  Mutable-doc (`bracket.json` idiom) for config + per-slot state; append-JSONL
+  for history. *Rejected:* SQLite/Redis — gold-plating for a single-user bot
+  writing a few small JSON files (revisit only if state goes relational).
+- **New shared `tennisbot-config` volume: catcher rw, sprinter ro.** The ro
+  mount re-establishes a safety boundary (sprinter can read prefs, not corrupt
+  them). Single-writer ⇒ no lock; atomic temp-rename on write. Telegram handler
+  co-located in the catcher process (single-writer + outbound long-poll = "no
+  open ports").
+- **Weekly cap counted from EA Manage Bookings, not a local counter.** EA is
+  authoritative (manual bookings count too); `has_booking` already gives
+  paid-vs-held. Semantics: paid-only, Monday reset, activity jobs excluded,
+  default 3. *Rejected:* local tally — drifts if a court is booked outside the bot.
+- **Live flip is Telegram-settable, guarded.** Owner chose convenience over a
+  deploy-level barrier; fat-finger risk judged low. Guards: a confirm handshake
+  on the `false→true` transition *only*, and mode always shown in
+  heartbeat/read-back (closes the "invisible persisted state" gap a Telegram
+  flag opens vs a git-visible compose flag). Net unchanged: hold-and-notify
+  bounds the blast radius. *Rejected:* deploy-level-only (safer but less
+  convenient; the guards close most of the gap).
+- **One-session model unchanged in shape.** Catcher inherits all of watchd's
+  blackouts; sprinter stays privileged. Three consumers (sprinter/catcher/Mac
+  jobs) is the comfortable ceiling for fixed time-windows; a fourth would
+  justify a real inter-process lock.
+- **EA access validated by live probe (2026-07-23):** native day/time search
+  filters + a whole-week grid (`mrmResourceStatus.aspx`) ⇒ ~1 search + ≤2 grid
+  opens per centre/cycle. Two-stage filter (coarse server-side, fine
+  client-side). Known build cost: a **new week-grid parser** (different page,
+  per-(date,time) not per-court) feeding the existing single-date booking flow.
