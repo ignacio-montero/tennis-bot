@@ -106,7 +106,7 @@ Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
   (cron, Task Scheduler, EventBridge) at the same `scheduled_run.sh` / CLI — no
   booking-logic changes. Code lives in `deploy/`.
 
-## Court-drop booker — SIDECAR built, awaiting deploy (dry-run) ✅⏳ (2026-07-22)
+## Court-drop booker — SIDECAR DEPLOYED, LIVE on the homelab (dry-run) ✅ (2026-07-23)
 `tennisbot drop` pre-warms a session, measures server-clock skew, spin-waits to
 the drop instant, then camps through overload within `--retry-window` (90s
 default). **Drop time confirmed: 00:00:00 London on D−7** (21 & 23 Jul flipped
@@ -118,8 +118,22 @@ open within ~20 s of midnight; see DECISIONS.md).
   deploys with the same `docker compose up -d` as watchd. The one-session rule is
   the watchd **23:53–00:07 in-image blackout** (0.3.0), not an external
   stop/start. **Dry-run** (`--after 19:00`, no `--live`) — add `--live` to the
-  compose command to book. Branches `claude/drop-sidecar-trigger` (both repos),
-  unpushed; handover + runbook in `docs/NEXT_STEPS.md` / `deploy/docker/DROP.md`.
+  compose command to book. Merged + deployed 2026-07-23 (tennis-bot PR #2,
+  homelab PR #1); runbook in `deploy/docker/DROP.md`. Container
+  `tennisbot-drop`, image **:0.3.1**, no ports, `restart: unless-stopped`.
+  Check it: `ssh homelab 'docker logs --tail 20 tennisbot-drop'` — a
+  `drop_loop.sleep` line naming the next drop date means it's healthy.
+  ⚠️ `ssh homelab` is the LAN address; use **`ssh homelab-ts`** (tailnet) when
+  away from the home network.
+- **Failure diagnosis (0.3.1, 2026-07-23):** a drop that secures nothing now
+  reports WHY — `never_opened` (release didn't happen → the drop time may have
+  moved; re-run the watcher), `sold_out` (lost the race), `prefs_too_narrow`
+  (slots WERE free, `--after` excluded them → widen the filter, don't tune
+  timing). Emitted to Telegram, a `drop.diagnosis` log line, and
+  `drop-outcomes.jsonl` (`reason_code`/`grid_seen`/`n_avail`). Needed because
+  `row_full` is ambiguous, so the discriminator is "did we ever read a real
+  grid across the camp window", not any single read. See `diagnose_drop_failure`
+  in `runner.py`.
 - ✅ **RESOLVED (2026-07-22 clean run): evening slots DO exist and parse
   correctly.** The old "no ≥19:00 availability at 00:45" worry is closed. The
   0.2.1 full-grid log for D+7 = 29 Jul showed Synth 08:00–17:00 only but
@@ -137,8 +151,13 @@ open within ~20 s of midnight; see DECISIONS.md).
 
 ## Homelab: watchd drop-time hunter — DEPLOYED, LIVE ✅ (2026-07-12)
 `tennisbot watchd` runs 24/7 in Docker on the homelab (container
-`tennisbot-watchd`, image `ghcr.io/ignacio-montero/tennisbot-watchd:0.1.3`,
-no published ports). It polls today+7/+8 coarsely all day (20 min), finely
+`tennisbot-watchd`, image `ghcr.io/ignacio-montero/tennisbot-watchd:0.3.0`,
+no published ports). ⚠️ **Its original mission — find the drop time — is
+COMPLETE** (00:00 D−7, confirmed 2026-07-16). What remains is (a) a regression
+detector if EA ever moves the release, and (b) the 09:00 heartbeat. Retiring it
+(`docker compose stop tennisbot-watchd`) is under consideration — 0.3.1's
+`never_opened` diagnosis is what makes "wake it only if the drop stops working"
+a real trigger. It polls today+7/+8 coarsely all day (20 min), finely
 (20 s) in hot windows (static **23:40–00:30** midnight-primary + 21:35–22:15
 evening fallback + an auto-tightening window around the last detected bracket;
 windows may cross midnight), skips dates already seen open, has built-in

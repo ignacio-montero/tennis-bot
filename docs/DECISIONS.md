@@ -100,3 +100,25 @@ discussion of the architectural ones lives in
   midnight-rollover date fix); only the trigger layer changed — the "portable
   trigger" principle in action. `drop-loop` reuses `_next_drop` for scheduling.
   Image builds moved to GitHub Actions on a `v*` tag (no more hand-built images).
+  **Deployed 2026-07-23** (dry-run), watchd rolled to 0.3.0 for the blackout.
+- **A failed drop must say WHY, not just "no slot" (2026-07-23, v0.3.1)** —
+  `run_drop` reported `no slot after retries` for every failure, so "the release
+  moved" and "I lost the race" were indistinguishable. That made the planned
+  fallback ("if the drop stops booking, wake the watcher to re-find the drop
+  time") **untriggerable** — the signal it depends on didn't exist. Since
+  `row_full` is ambiguous (see CLAUDE.md: it means BOTH "not released yet" and
+  "sold out"), a single read can't diagnose it; the discriminator is
+  **observational across the whole camp window** — did we ever get *into* a
+  timetable? `RunResult` now carries `grid_seen`/`n_avail`, `run_drop`
+  accumulates them across all attempts (not just the last, so one read landing
+  mid-postback can't decide it), and `diagnose_drop_failure` classifies:
+  `never_opened` (release didn't happen → wake the watcher), `sold_out`
+  (released, gone before we parsed → lost the race), `prefs_too_narrow` (slots
+  WERE free, the filter excluded them → config problem, not a race loss). The
+  third case is the one that was previously invisible and most misleading: it
+  looks exactly like losing, so it would send you tuning timing when the real
+  fix is widening `--after`. Code + counts go to Telegram, a `drop.diagnosis`
+  log line, and `drop-outcomes.jsonl`, so a run of bad nights is queryable
+  rather than anecdotal. Rejected: inferring from the `notes` strings
+  `_run_court` already builds — parsing prose is fragile and the counts were
+  being thrown away anyway.
