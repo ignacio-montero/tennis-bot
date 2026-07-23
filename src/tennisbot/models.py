@@ -35,3 +35,8 @@ class RunResult:
     message: str
     chosen: Slot | None = None
     screenshot_path: str | None = None
+    # Why a run found nothing. `row_full` is ambiguous ("not released yet" AND
+    # "sold out"), so a failed drop can't be diagnosed from a single read — we
+    # carry forward whether we ever got INTO the grid, and how much was in it.
+    grid_seen: bool = False      # did we read a real timetable (row not Full)?
+    n_avail: int = 0             # most available slots seen on any surface

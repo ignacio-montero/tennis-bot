@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from tennisbot.config import (CourtConfig, Drop, Preference, Surface, Target)
 from tennisbot.models import Slot
-from tennisbot.runner import choose_court_slots
+from tennisbot.runner import choose_court_slots, diagnose_drop_failure
 
 
 def _target(two_hours: bool) -> Target:
@@ -125,3 +125,46 @@ def test_drop_loop_survives_a_failing_night(monkeypatch):
     monkeypatch.setattr(runner, "run_drop", boom)
     runner.run_drop_loop(target_key="paddington", max_iters=2, notify=False)
     assert calls["n"] == 2          # did not abort after the first failure
+
+
+# ── drop failure diagnosis ("did the drop move?" vs "did I lose?") ──────────
+def test_never_opened_when_grid_never_read():
+    # The row stayed Full for the whole camp window => the release did not
+    # happen. This is the ONLY code that should prompt re-running the watcher.
+    code, reason = diagnose_drop_failure(grid_seen=False, n_avail=0)
+    assert code == "never_opened"
+    assert "never opened" in reason
+
+
+def test_sold_out_when_grid_read_but_empty():
+    code, reason = diagnose_drop_failure(grid_seen=True, n_avail=0)
+    assert code == "sold_out"
+    assert "Lost the race" in reason
+
+
+def test_prefs_too_narrow_names_the_filter():
+    # Slots WERE free — this is a config problem, not a race loss. The filter
+    # that excluded them must appear, or the message isn't actionable.
+    code, reason = diagnose_drop_failure(grid_seen=True, n_avail=4,
+                                         after_time="19:00")
+    assert code == "prefs_too_narrow"
+    assert "4 free slot(s)" in reason and "after 19:00" in reason
+
+
+def test_want_time_filter_named_when_no_after_time():
+    _, reason = diagnose_drop_failure(grid_seen=True, n_avail=2,
+                                      want_time="18:00")
+    assert "want 18:00" in reason
+
+
+def test_ranked_prefs_named_when_no_explicit_filter():
+    _, reason = diagnose_drop_failure(grid_seen=True, n_avail=2)
+    assert "ranked prefs" in reason
+
+
+def test_zero_avail_never_masquerades_as_sold_out():
+    # THE point of the change: row_full is ambiguous, so n_avail==0 alone must
+    # never be read as "sold out" — only a grid we actually read can say that.
+    unopened, _ = diagnose_drop_failure(grid_seen=False, n_avail=0)
+    opened, _ = diagnose_drop_failure(grid_seen=True, n_avail=0)
+    assert unopened == "never_opened" and opened == "sold_out"
