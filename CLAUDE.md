@@ -12,7 +12,9 @@ the Everyone Active app. **Payment / 3DS is intentionally out of scope.**
 ## Docs map
 - `docs/NEXT_STEPS.md` — **current status + recommended next steps (read first).**
 - `docs/PRD.md` — goal, scope, success criteria.
-- `docs/ARCHITECTURE.md` — design, connectivity strategy, roadmap.
+- `docs/PRD-cancellation-catcher.md` — feature PRD: cancellation catcher + Telegram config.
+- `docs/ARCHITECTURE.md` — design, connectivity strategy, roadmap (§8 = catcher subsystem).
+- `docs/API_SPEC.md` — internal contracts: shared config schema + Telegram command surface.
 - `docs/DECISIONS.md` — decision log with rationale.
 - `docs/BACKLOG.md` — future ideas + status.
 - `recon/FINDINGS.md` — reverse-engineering notes (IDs, flow, surfaces, layouts).

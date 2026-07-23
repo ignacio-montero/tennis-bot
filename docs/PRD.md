@@ -4,6 +4,10 @@ _What we're building and why. For the design see
 [ARCHITECTURE.md](ARCHITECTURE.md); for status see
 [NEXT_STEPS.md](NEXT_STEPS.md); for future ideas see [BACKLOG.md](BACKLOG.md)._
 
+> **Feature PRDs (bounded additions on top of this product):**
+> [Cancellation Catcher + Telegram-configurable preferences](PRD-cancellation-catcher.md)
+> — draft 2026-07-23.
+
 ## Problem & goal
 
 Public tennis courts in London release on a rolling 7-day window and the good

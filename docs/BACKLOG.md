@@ -36,6 +36,12 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   bounded deadline; alert on give-up.
 
 ## 2. Booking logic
+- 🔵 **Cancellation Catcher + Telegram-configurable prefs** — scan D0–D+7 for
+  freed courts matching prefs and book them (hold-and-notify, weekly cap);
+  preferences (days/hours, slot length, location, cap) set from Telegram and
+  shared by BOTH the catcher and the drop booker. Scoped in a dedicated PRD:
+  [PRD-cancellation-catcher.md](PRD-cancellation-catcher.md) (draft 2026-07-23).
+  EA week-grid feasibility validated by live probe same day.
 - 🟡 **Concurrency / racing** — fire attempts for ranked alternatives at the
   drop, first-win-cancels-rest (architecture already designed for this).
 - 🟡 **Court preferences** — prefer/avoid specific courts (we already capture the
