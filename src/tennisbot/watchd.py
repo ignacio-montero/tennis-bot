@@ -55,6 +55,13 @@ DEFAULT_BLACKOUTS = [  # (weekday 0=Mon, "HH:MM", "HH:MM")
     (6, "14:20", "14:55"),   # Sun backup  14:30
 ]
 
+# Nightly blackout around the LIVE `drop` booker sidecar. Every night (weekday-
+# agnostic), crosses midnight: the sidecar wakes ~23:57 to pre-warm and camps to
+# ~00:01:30, so watchd tears down its browser and holds no Connect session in
+# this window — one session per EA account. This replaces the old approach of an
+# external wrapper stop/starting the container; watchd yields to the booker itself.
+DROP_BLACKOUT = "23:53-00:07"
+
 # Midnight window is primary: bracket 2026-07-12→13 showed D+7 opening between
 # 23:59:40 and 00:19:40 (midnight-D7 theory). Evening window kept as fallback.
 DEFAULT_HOT_WINDOWS = ["23:40-00:30", "21:35-22:15"]
@@ -70,21 +77,42 @@ def _hm(s: str) -> dt.time:
     return dt.time(h, m)
 
 
-def in_blackout(now: dt.datetime, blackouts=None) -> bool:
+def _in_daily_window(t: dt.time, window: str) -> bool:
+    """Membership in a daily HH:MM-HH:MM window (crosses midnight if start>end)."""
+    s_str, e_str = window.split("-")
+    s, e = _hm(s_str), _hm(e_str)
+    if s <= e:
+        return s <= t < e
+    return t >= s or t < e            # crosses midnight, e.g. "23:53-00:07"
+
+
+def in_blackout(now: dt.datetime, blackouts=None,
+                drop_blackout: str | None = DROP_BLACKOUT) -> bool:
     blackouts = DEFAULT_BLACKOUTS if blackouts is None else blackouts
     for wd, start, end in blackouts:
         if now.weekday() == wd and _hm(start) <= now.time() < _hm(end):
             return True
+    if drop_blackout and _in_daily_window(now.time(), drop_blackout):
+        return True
     return False
 
 
-def next_blackout_end(now: dt.datetime, blackouts=None) -> dt.datetime:
+def next_blackout_end(now: dt.datetime, blackouts=None,
+                      drop_blackout: str | None = DROP_BLACKOUT) -> dt.datetime:
     """End of the blackout `now` is inside (call only when in_blackout)."""
     blackouts = DEFAULT_BLACKOUTS if blackouts is None else blackouts
     for wd, start, end in blackouts:
         if now.weekday() == wd and _hm(start) <= now.time() < _hm(end):
             return now.replace(hour=_hm(end).hour, minute=_hm(end).minute,
                                second=0, microsecond=0)
+    if drop_blackout and _in_daily_window(now.time(), drop_blackout):
+        s_str, e_str = drop_blackout.split("-")
+        s, e = _hm(s_str), _hm(e_str)
+        end_at = now.replace(hour=e.hour, minute=e.minute,
+                             second=0, microsecond=0)
+        if s > e and now.time() >= s:    # crossing midnight, in the pre-midnight part
+            end_at += dt.timedelta(days=1)
+        return end_at
     return now
 
 

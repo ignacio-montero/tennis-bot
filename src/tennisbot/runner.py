@@ -404,6 +404,51 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
             browser.close()
 
 
+def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
+                  after_time: str | None = None, lead_min: float = 3.0,
+                  dry_run: bool = True, notify: bool = True,
+                  headless: bool = True, max_iters: int | None = None,
+                  epsilon: float = 0.15, retry_window_s: float = 90.0,
+                  retry_gap_s: float = 1.0) -> None:
+    """Self-scheduling nightly drop booker — the homelab `drop` sidecar.
+
+    One long-running container (no host cron, no Docker socket): each night it
+    sleeps until `lead_min` minutes before the next drop instant, runs one
+    `run_drop` (which pre-warms a session and spin-waits to the instant), and
+    loops. Reuses `_next_drop` for the instant/date so the midnight-rollover
+    logic is shared with `run_drop`. Exactly one attempt per night — after an
+    instant is handled we schedule strictly past it, so a fast pre-warm failure
+    can't hot-spin the loop (the real drop contention is handled inside
+    `run_drop`'s camp/retry window, not here).
+    """
+    import time as _time
+    d = load_targets()[target_key].drop
+    handled = 0.0
+    n = 0
+    while max_iters is None or n < max_iters:
+        n += 1
+        # next drop STRICTLY after the last one handled (grace_s=0 so a
+        # just-fired instant is never re-selected).
+        ref = max(_time.time(), handled + 1.0)
+        instant, target_date = _next_drop(d.local_time, d.timezone,
+                                          d.days_before, now_epoch=ref,
+                                          grace_s=0.0)
+        gap = (instant - lead_min * 60.0) - _time.time()
+        if gap > 0:
+            log.info("drop_loop.sleep", wake_in_s=round(gap),
+                     drop_date=target_date, lead_min=lead_min)
+            _time.sleep(gap)
+        log.info("drop_loop.fire", drop_date=target_date, dry_run=dry_run)
+        try:
+            run_drop(target_key=target_key, dry_run=dry_run, headless=headless,
+                     want_time=want_time, after_time=after_time, notify=notify,
+                     epsilon=epsilon, retry_window_s=retry_window_s,
+                     retry_gap_s=retry_gap_s)
+        except Exception as e:                       # never let one night kill the loop
+            log.error("drop_loop.iter_failed", err=str(e))
+        handled = instant
+
+
 # ── entrypoint ────────────────────────────────────────────────────────────────
 def run_once(target_date: str, dry_run: bool = True, headless: bool = True,
              want_time: str | None = None, target_key: str = "paddington",

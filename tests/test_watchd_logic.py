@@ -116,3 +116,22 @@ def test_dates_tracked_independently():
     _feed_closed(tr, "2026-07-19", REQUIRE_CLOSED)
     ev = tr.observe("2026-07-20", 3, "avail/60", "t1", "t2")
     assert ev["event"] == "open_at_first_read"   # +8 has its own baseline
+
+
+# -- nightly drop blackout (sidecar hand-off) --------------------------------
+
+def test_nightly_drop_blackout_covers_midnight():
+    # watchd must yield to the live drop booker across midnight, every night.
+    assert in_blackout(_at(0, "23:55"))       # Mon pre-warm launch window
+    assert in_blackout(_at(3, "00:03"))       # Thu just after the drop
+    assert not in_blackout(_at(0, "23:50"))   # before the window
+    assert not in_blackout(_at(0, "00:10"))   # after the window
+
+
+def test_next_blackout_end_drop_window_crosses_midnight():
+    end = next_blackout_end(_at(0, "23:55"))  # Mon 23:55 -> Tue 00:07
+    assert (end.hour, end.minute) == (0, 7)
+    assert end.date() == dt.date(2026, 7, 7)  # rolled to the next day
+    end2 = next_blackout_end(_at(1, "00:03"))  # Tue 00:03 -> Tue 00:07 (same day)
+    assert (end2.hour, end2.minute) == (0, 7)
+    assert end2.date() == dt.date(2026, 7, 7)

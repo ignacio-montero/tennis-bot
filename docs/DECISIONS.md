@@ -84,3 +84,19 @@ discussion of the architectural ones lives in
   setup; accepted as-is. (Telegram token was rotated ✅.) `.env` stays
   gitignored, launchd plists committed as `__PROJECT_DIR__` templates rendered
   at install, staged-secret scan before every push.
+- **Court-drop trigger = self-scheduling sidecar, not host cron
+  (2026-07-22, supersedes the 0.2.x cron rehearsal)** — the nightly booker runs
+  as a long-running `drop-loop` container (`restart: unless-stopped`) that
+  sleeps to ~00:00−lead, books once, and loops. Replaces the earlier
+  cron-fired one-shot (`run-drop.sh` + nacho's crontab + external watchd
+  stop/start). Chosen because it (a) needs **no Docker socket and no host
+  crontab** — deploys with the same `docker compose up -d` as watchd, no extra
+  privilege; and (b) is **TZ-aware (`Europe/London`) so it needs no DST
+  maintenance**, unlike a UTC crontab that must be hand-edited at the Oct
+  clocks change. The one-session rule is enforced by a nightly **23:53–00:07
+  in-image blackout in watchd** (0.3.0), which tears down its browser and yields
+  the EA session — no cross-container control needed. **All 0.2.x booking logic
+  is kept** (grid logging, `--after` slot selection, the `_next_drop`
+  midnight-rollover date fix); only the trigger layer changed — the "portable
+  trigger" principle in action. `drop-loop` reuses `_next_drop` for scheduling.
+  Image builds moved to GitHub Actions on a `v*` tag (no more hand-built images).
