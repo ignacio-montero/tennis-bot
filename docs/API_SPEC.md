@@ -91,6 +91,15 @@ ports"), run inside the catcher process.
 | `/status` | Reply with the active config (§1.2), **mode first** (LIVE/DRY-RUN), this week's paid-count vs cap, and next scan time. |
 | `/help` | List commands. |
 
+> ⚠️ **`/status` needs two facts that are NOT in the config document**: this
+> week's paid-booking count (derived from EA Manage Bookings — ARCHITECTURE
+> §8.6) and the catcher's next scan time. The handler therefore takes them as
+> **injected optionals** and renders `unknown` when absent. **Whoever builds the
+> catcher loop must pass them in**, or `/status` will permanently under-report.
+> (Gap found during implementation, 2026-07-24 — the handler was built against
+> this contract before the catcher existed, which is exactly what the injection
+> seam is for.)
+
 ### 2.2 Config commands (each validates per §1.3, then persists)
 
 | Command | Example | Sets |
