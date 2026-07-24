@@ -35,6 +35,10 @@ screenshots/
 *.db
 logs/
 *.log
+# Local default dirs for the file-on-a-volume stores (containers mount volumes
+# and inject WATCHD_STATE_DIR / TENNISBOT_CONFIG_DIR instead).
+.watchd/
+.tennisbot-config/
 
 # ─── Claude Code local settings (can contain approved commands w/ secrets) ────
 .claude/settings.local.json
