@@ -124,8 +124,25 @@ def test_nightly_drop_blackout_covers_midnight():
     # watchd must yield to the live drop booker across midnight, every night.
     assert in_blackout(_at(0, "23:55"))       # Mon pre-warm launch window
     assert in_blackout(_at(3, "00:03"))       # Thu just after the drop
-    assert not in_blackout(_at(0, "23:50"))   # before the window
+    assert not in_blackout(_at(0, "23:40"))   # before the window
     assert not in_blackout(_at(0, "00:10"))   # after the window
+
+
+def test_blackout_is_open_before_the_sprinter_wakes():
+    """THE coupling: `drop-loop --lead-min` and DROP_BLACKOUT are two halves of
+    one handshake. The booker wakes at 00:00 − lead to do a cold login; if the
+    blackout isn't open yet, watchd is still holding the EA session and the two
+    collide (2026-07-23: 14s of margin, and the login timed out).
+
+    This test fails if someone raises the lead without widening the blackout.
+    """
+    from tennisbot.runner import run_drop_loop
+    import inspect
+    lead_min = inspect.signature(run_drop_loop).parameters["lead_min"].default
+    wake_h, wake_m = divmod(int(round(24 * 60 - lead_min)), 60)   # 00:00 − lead
+    assert in_blackout(_at(0, f"{wake_h:02d}:{wake_m:02d}")), (
+        f"booker wakes at {wake_h:02d}:{wake_m:02d} (lead_min={lead_min}) but "
+        f"DROP_BLACKOUT is not open then — widen it")
 
 
 def test_next_blackout_end_drop_window_crosses_midnight():

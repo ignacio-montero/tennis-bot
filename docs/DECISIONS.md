@@ -176,3 +176,27 @@ rejected:
   opens per centre/cycle. Two-stage filter (coarse server-side, fine
   client-side). Known build cost: a **new week-grid parser** (different page,
   per-(date,time) not per-court) feeding the existing single-date booking flow.
+
+- **Pre-warm lead + blackout raised together; retries added (2026-07-24,
+  v0.3.2)** — the sidecar's first live firing died in a 45s cold-login timeout
+  86s before the drop, while 53 slots released normally. Root cause is
+  structural, not bad luck: the sprinter's session idles ~24h so it *always*
+  cold-logs-in, and `lead_min=3` afforded ~one attempt with no retry. Changed as
+  ONE coupled unit: `lead_min 3→10`, `DROP_BLACKOUT 23:53→23:45-00:07`, and
+  `prewarm_attempts=3` bounded by `prewarm_floor_s=25` (never still logging in at
+  the instant). The lead and the blackout are two halves of one handshake — the
+  blackout must be open before the sprinter wakes, or raising the lead
+  *manufactures* session contention. Both kept in **code** (not the compose
+  command) so they can't drift, with a test that derives the wake time from
+  `lead_min` and fails if the blackout no longer covers it. *Rejected for now:*
+  sharing a session volume so the catcher keeps the sprinter's session warm —
+  attacks the real root cause but crosses the deliberate share-nothing session
+  boundary; deferred pending its own evidence.
+- **`no_observation` added as a fourth failure code (2026-07-24)** — a crash
+  before arming says *nothing* about the drop time, and conflating it with
+  `never_opened` would have concluded "the drop moved" when the drop was fine
+  (53 slots released). Emitted from the crash path, which previously wrote **no**
+  outcome at all — so the most diagnostic failures were invisible in
+  `drop-outcomes.jsonl`. Also elevates the independent observer from
+  "regression detector" to **ground truth whenever the sprinter fails**: watchd's
+  00:07 poll was the only evidence distinguishing "our bug" from "drop moved".

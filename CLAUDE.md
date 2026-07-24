@@ -144,10 +144,17 @@ open within ~20 s of midnight; see DECISIONS.md).
   surface-specific + the pre-0.2.1 parser blind spot, not a real absence.
   Graduating to `--live` is now a go/no-go call, not a blocker (see NEXT_STEPS).
 - New drop flags: `drop --after HH:MM` (earliest available court at/after a time,
-  any court) and a midnight-rollover-safe target date (`_next_drop`). ⚠️ Outcomes
-  are *meant* to persist to `drop-outcomes.jsonl` under `$DROP_STATE_DIR`, but as
-  of 2026-07-22 the `tennisbot-drop-state` volume is empty — the jsonl isn't
-  actually written (minor, non-blocking; cron.log is the source of truth).
+  any court) and a midnight-rollover-safe target date (`_next_drop`). ✅ Outcomes
+  **do** persist to `drop-outcomes.jsonl` under `$DROP_STATE_DIR` — verified
+  2026-07-24 (5 records in `tennisbot-drop-state`). The earlier "jsonl isn't
+  written" note was wrong: the volume merely had no completed run yet. Read it:
+  `docker exec tennisbot-drop cat /data/drop/drop-outcomes.jsonl`.
+- ⚠️ **`lead_min` and watchd's `DROP_BLACKOUT` are COUPLED** (v0.3.2): the
+  sidecar wakes at `00:00 − lead_min` (now **10 min** → 23:50) for a cold login,
+  and the blackout (now **23:45–00:07**) must already be open or watchd still
+  holds the EA session. **Raise one, raise the other** — a test derives the wake
+  time from `lead_min` and fails if the blackout no longer covers it. Pre-warm
+  now retries (3 attempts, stopping 25s before the instant).
 - The old Mac **launchd** drop job is abandoned (homelab is the target); its
   disabled plist template stays in `deploy/launchd/` for reference only.
 

@@ -96,8 +96,11 @@ def main(argv: list[str] | None = None) -> int:
     dl.add_argument("--want-time", help="Book this HH:MM (else ranked prefs).")
     dl.add_argument("--after", help="Book earliest available court at/after this "
                     "HH:MM, any court (overrides ranked prefs).")
-    dl.add_argument("--lead-min", type=float, default=3.0,
-                    help="Minutes before the drop to wake and pre-warm.")
+    dl.add_argument("--lead-min", type=float, default=10.0,
+                    help="Minutes before the drop to wake and pre-warm. COUPLED "
+                         "to watchd's DROP_BLACKOUT — the blackout must already "
+                         "be open when we wake, or watchd still holds the EA "
+                         "session. Raise one, raise the other.")
     dl.add_argument("--live", action="store_true",
                     help="Create real holds (default dry-run, like `drop`).")
     dl.add_argument("--epsilon", type=float, default=0.15)

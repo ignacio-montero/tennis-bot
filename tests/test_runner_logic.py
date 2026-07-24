@@ -168,3 +168,27 @@ def test_zero_avail_never_masquerades_as_sold_out():
     unopened, _ = diagnose_drop_failure(grid_seen=False, n_avail=0)
     opened, _ = diagnose_drop_failure(grid_seen=True, n_avail=0)
     assert unopened == "never_opened" and opened == "sold_out"
+
+
+# ── pre-warm retry + no_observation (2026-07-23 cold-login incident) ────────
+def test_lead_min_default_gives_room_for_retries():
+    # The lead is the runway for cold logins. A 45s navigation timeout burned
+    # the whole 3-min lead on 2026-07-23; the default must now afford several.
+    import inspect
+    from tennisbot import runner
+    lead = inspect.signature(runner.run_drop_loop).parameters["lead_min"].default
+    prewarm = inspect.signature(runner.run_drop).parameters["prewarm_attempts"].default
+    floor = inspect.signature(runner.run_drop).parameters["prewarm_floor_s"].default
+    # Worst observed cold-login attempt was ~92s; require room for them all
+    # plus the floor we refuse to encroach on.
+    assert lead * 60 >= prewarm * 92 + floor, (
+        f"lead {lead}min too short for {prewarm} attempts")
+
+
+def test_no_observation_is_not_never_opened():
+    # A crash before arming says NOTHING about the drop time. Conflating it with
+    # `never_opened` would wrongly conclude "the drop moved" — which is exactly
+    # what the 2026-07-23 evidence disproved (the drop released 53 slots fine).
+    code, _ = diagnose_drop_failure(grid_seen=False, n_avail=0)
+    assert code == "never_opened"          # classifier only sees observed runs
+    assert code != "no_observation"        # crash path emits that, separately

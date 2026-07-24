@@ -642,3 +642,77 @@ visible, lapses in ~1h if unpaid. Bounded blast radius.
 Book (screenshot + pay prompt) and error → notify. Empty poll cycles → silent.
 Plus **one daily heartbeat** (watchd's 09:00 "alive"), always stating the mode
 and current config summary, so silence never means "dead".
+
+### 8.10 Learnings from the first live drop (2026-07-23 → 24)
+
+The sidecar's first real firing **failed**, and the failure was more instructive
+than a success. Timeline: woke 23:57:00 exactly (`lead_min=3`) → cold login
+(`session.stale_relogin`) → **45s navigation timeout at 23:58:34**, 86s before
+the instant → loop caught it and rescheduled. Meanwhile watchd's independent
+00:07 poll recorded `date=2026-07-31 avail=53`: **the drop happened perfectly
+normally and released 53 slots; we sat it out because a login timed out.**
+
+Validated as designed: exact scheduling, loop resilience (`drop_loop.iter_failed`
+→ next night), the blackout firing, and `drop-outcomes.jsonl` writing (5 prior
+records — the "jsonl isn't written" note in CLAUDE.md was **wrong** and has been
+corrected).
+
+**(a) A fourth failure class sits ABOVE the §8.3 table: `no_observation`.**
+The sprinter can crash *before observing anything*. Treating that as
+`never_opened` would have concluded "the drop moved" — flatly wrong, as the 53
+slots prove. `no_observation` is now emitted from the crash path and must never
+be read as evidence about the drop time. The §8.3 table gains a row:
+
+| Sprinter | Catcher (D+7) | Verdict |
+|---|---|---|
+| `no_observation` (crashed) | D+7 opened normally | 🛠️ **our bug** — drop is fine |
+
+**(b) The independent observer is ground truth, not just a regression detector.**
+watchd's 00:07 poll is the *only* reason we know the drop worked. Without it the
+night is ambiguous (bot broken vs drop moved). This raises the observer's
+importance in the absorbed catcher: it is the arbiter whenever the sprinter
+fails, so its D+7 scan must keep running even on nights the sprinter dies.
+
+**(c) The outcomes log had a blind spot.** `_record` only ran inside the camp
+loop, so crashes — the most diagnostic events — wrote nothing. Fixed: the
+exception handler now appends an outcome with `reason_code: "no_observation"`.
+
+**(d) The sprinter logs in COLD every night, structurally.** Its session sits
+unused ~24h, so `session.stale_relogin` fires every time — while the catcher
+(30-min polling) will always hold a warm session. So the *more fragile*
+component does the *more time-critical* job. Mitigated by pre-warm retries
+(§8.11). A deeper fix — sharing a session volume so the catcher keeps the
+sprinter warm — was **deferred**: it crosses the deliberate share-nothing
+session boundary and deserves its own evidence.
+
+**(e) Blackout enforcement is lazy, and the margin was 14 seconds.** watchd
+checks `in_blackout` at loop-top, so entry lags a poll cycle: it stood down at
+**23:56:48** (nominal 23:53) and the sprinter logged in at **23:57:02**. Whether
+that near-miss *caused* the timeout is unproven (a browser teardown does not end
+the server-side EA session), but the design lesson stands independently: **the
+catcher must enforce blackouts proactively** — never start a cycle that could
+still be running when the blackout opens — not merely check at loop-top.
+
+### 8.11 Pre-warm lead & blackout are COUPLED parameters
+
+`drop-loop --lead-min` (wake at `instant − lead`, spend it on cold login +
+Connect entry + skew) and watchd's `DROP_BLACKOUT` are **two halves of one
+handshake**: the blackout must already be open when the sprinter wakes, or
+watchd still holds the EA session. Raising one without the other inverts the
+ordering and *manufactures* the contention the blackout exists to prevent.
+
+Changed together (v0.3.2): **`lead_min: 3 → 10`** and
+**`DROP_BLACKOUT: 23:53 → 23:45-00:07`**, plus **pre-warm retries**
+(`prewarm_attempts=3`, `prewarm_floor_s=25` — never still be logging in at the
+instant). `lead_min` does **not** change *when* we book (`clock.wait_until`
+pins that to 00:00:00); it only buys runway. 180s afforded ~one cold login
+attempt; 600s affords several.
+
+Both live in **code**, not in the compose command, precisely so they cannot
+drift apart — and `tests/test_watchd_logic.py::test_blackout_is_open_before_the_
+sprinter_wakes` derives the wake time from `lead_min` and asserts the blackout
+covers it, so raising the lead without widening the window fails CI.
+
+**Consequence for the catcher:** the blackout is now ~22 min, which will swallow
+a whole 30-min cycle most nights. Acceptable, and it belongs in the catcher's
+blackout-aware scheduling (§8.10e).

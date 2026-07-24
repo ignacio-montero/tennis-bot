@@ -341,7 +341,9 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
              time_override: str | None = None, notify: bool = True,
              epsilon: float = 0.15, retry_window_s: float = 90.0,
              retry_gap_s: float = 1.0,
-             after_time: str | None = None) -> RunResult:
+             after_time: str | None = None,
+             prewarm_attempts: int = 3,
+             prewarm_floor_s: float = 25.0) -> RunResult:
     """Pre-warm a session, spin-wait to the server-clock drop instant, then
     'camp' the booking: retry rapidly through overload / not-yet-dropped until it
     books or `retry_window_s` elapses. Targets the date the drop releases
@@ -349,6 +351,10 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
 
     `after_time` (HH:MM) books the earliest available court at/after that time,
     any court — used by the dry-run rehearsal ('book any court after 19:00').
+
+    `prewarm_attempts` / `prewarm_floor_s` bound the cold-login retries: keep
+    trying to arm until we succeed, run out of attempts, or get within
+    `prewarm_floor_s` of the instant (never still be logging in at the drop).
     """
     import time as _time
     secrets = Secrets.from_env()
@@ -364,11 +370,43 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
         page = ctx.new_page()
         prov = EveryoneActiveProvider(secrets, target)
         try:
-            prov.start_session(ctx, page)      # pre-warm: authenticate early
-            prov.enter_connect(page, ctx)
-            skew = clock.server_skew()
-            log.info("drop.armed", date=target_date, drop_local=drop_local,
-                     skew=round(skew, 3), after_time=after_time)
+            # Pre-warm (authenticate + enter Connect + measure skew), WITH
+            # RETRIES. The sidecar's session sits unused ~24h between nights, so
+            # this is always a cold login — and on 2026-07-23 a single 45s
+            # navigation timeout burned the only attempt and cost the whole
+            # night (53 slots were released; we booked nothing). Retrying inside
+            # the lead window is what turns `lead_min` runway into resilience.
+            skew = None
+            attempt = 0                      # defined even if attempts <= 0
+            last_err: Exception | None = None
+            for attempt in range(1, prewarm_attempts + 1):
+                try:
+                    prov.start_session(ctx, page)
+                    prov.enter_connect(page, ctx)
+                    skew = clock.server_skew()
+                    log.info("drop.armed", date=target_date, drop_local=drop_local,
+                             skew=round(skew, 3), after_time=after_time,
+                             attempt=attempt)
+                    break
+                except Exception as e:
+                    last_err = e
+                    left = instant - _time.time()
+                    log.warn("drop.prewarm_failed", attempt=attempt,
+                             s_to_drop=round(left), err=str(e)[:200])
+                    # Stop if we're out of attempts or too close to the instant
+                    # to finish another login — better to fail loud early than
+                    # to still be logging in when the courts drop.
+                    if attempt >= prewarm_attempts or left <= prewarm_floor_s:
+                        break
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+                    page = ctx.new_page()      # fresh page; the old one may be wedged
+            if skew is None:
+                raise RuntimeError(
+                    f"pre-warm failed after {attempt} attempt(s): {last_err}")
+
             tg.send(f"⏳ Armed: {target.name} court drop {drop_local} "
                     f"(for {target_date}). Server skew {skew:+.2f}s.")
             clock.wait_until(instant, skew=skew, epsilon=epsilon)
@@ -456,6 +494,24 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
                                        message="no slot after retries")
         except Exception as e:
             log.error("drop.failed", err=str(e))
+            # A crash before the camp loop previously wrote NO outcome at all
+            # (2026-07-23), so the most diagnostic failures were invisible in
+            # drop-outcomes.jsonl. `no_observation` is deliberately distinct from
+            # `never_opened`: we did not observe a closed grid, we failed to
+            # observe anything — so it says nothing about the drop time and must
+            # never be read as "the drop moved".
+            try:
+                _append_drop_outcome({
+                    "ts": dt.datetime.now(ZoneInfo(target.drop.timezone)).isoformat(),
+                    "target": target.key, "target_date": target_date,
+                    "drop_local": drop_local, "after_time": after_time,
+                    "dry_run": dry_run, "secured": False, "chosen": None,
+                    "grid_seen": False, "n_avail": 0,
+                    "reason_code": "no_observation",
+                    "message": f"run failed before observing the grid: {e}"[:300],
+                })
+            except Exception:
+                pass
             try:
                 tg.send(f"⚠️ {target.name} court drop failed — {e}")
             except Exception:
@@ -466,7 +522,7 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
 
 
 def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
-                  after_time: str | None = None, lead_min: float = 3.0,
+                  after_time: str | None = None, lead_min: float = 10.0,
                   dry_run: bool = True, notify: bool = True,
                   headless: bool = True, max_iters: int | None = None,
                   epsilon: float = 0.15, retry_window_s: float = 90.0,
