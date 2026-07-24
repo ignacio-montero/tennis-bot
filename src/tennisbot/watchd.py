@@ -56,11 +56,18 @@ DEFAULT_BLACKOUTS = [  # (weekday 0=Mon, "HH:MM", "HH:MM")
 ]
 
 # Nightly blackout around the LIVE `drop` booker sidecar. Every night (weekday-
-# agnostic), crosses midnight: the sidecar wakes ~23:57 to pre-warm and camps to
-# ~00:01:30, so watchd tears down its browser and holds no Connect session in
-# this window — one session per EA account. This replaces the old approach of an
-# external wrapper stop/starting the container; watchd yields to the booker itself.
-DROP_BLACKOUT = "23:53-00:07"
+# agnostic), crosses midnight: the sidecar wakes at 00:00 − lead_min to pre-warm
+# and camps to ~00:01:30, so watchd tears down its browser and holds no Connect
+# session in this window — one session per EA account. This replaces the old
+# approach of an external wrapper stop/starting the container; watchd yields to
+# the booker itself.
+#
+# ⚠️ COUPLED TO `drop-loop --lead-min` (default 10). The blackout MUST already be
+# open before the sidecar wakes, or watchd is still polling when the booker tries
+# its cold login. Raise the lead → widen this window. On 2026-07-23 (lead 3,
+# blackout 23:53) watchd stood down at 23:56:48 and the booker logged in at
+# 23:57:02 — 14 seconds of margin. Widened to 23:45 to cover a 10-min lead.
+DROP_BLACKOUT = "23:45-00:07"
 
 # Midnight window is primary: bracket 2026-07-12→13 showed D+7 opening between
 # 23:59:40 and 00:19:40 (midnight-D7 theory). Evening window kept as fallback.
