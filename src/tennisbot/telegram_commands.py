@@ -22,6 +22,7 @@ even confirm the bot exists.
 from __future__ import annotations
 
 import datetime as dt
+import html
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable
@@ -35,6 +36,19 @@ log = structlog.get_logger()
 
 # How long a `/live on` confirmation stays open (API_SPEC §2.3: "within 2 min").
 CONFIRM_TIMEOUT = dt.timedelta(minutes=2)
+
+
+def _esc(s: str) -> str:
+    """Escape text before it enters an HTML-parse-mode Telegram reply.
+
+    `notify/telegram.py` sends `parse_mode: HTML` and raise_for_status()es, so
+    a single stray '<' in echoed user input makes the API return 400 and the
+    reply is LOST — indistinguishable from a dead bot, in a system whose whole
+    notification principle is "silence never means dead". Rejecting bad input
+    and then echoing it back into markup is still injection; the fix is an
+    ENCODING step at the render boundary, not more validation upstream.
+    """
+    return html.escape(str(s), quote=False)
 CONFIRM_WORD = "CONFIRM"
 
 HELP = (
@@ -76,10 +90,27 @@ def handle_message(text: str, chat_id, prefs: Prefs, *, owner_chat_id,
     """Apply one inbound Telegram message. Pure: no I/O, no clock unless you
     omit `now`. Returns the *candidate* new prefs — the caller persists them."""
     now = now or dt.datetime.now(LONDON)
+    if now.tzinfo is None:
+        # A naive `now` would raise TypeError against the aware deadline below,
+        # mid-handshake, and escape this function. Assume London (the system's
+        # civil timezone everywhere else) rather than blowing up.
+        now = now.replace(tzinfo=LONDON)
 
     # -- authorisation: silence, not refusal -------------------------------
-    if str(chat_id) != str(owner_chat_id):
-        log.info("telegram.cmd_ignored_foreign", chat_id=str(chat_id))
+    # FAIL CLOSED on a missing identity. `str(chat_id) != str(owner_chat_id)`
+    # alone is a bypass: str(None) == str(None), so an absent TELEGRAM_CHAT_ID
+    # (new service, new .env) combined with a sender id of None — which is what
+    # the idiomatic update.get("message",{}).get("chat",{}).get("id") chain
+    # yields for channel_post / edited_message / my_chat_member updates —
+    # authorises a stranger against an account that creates real holds.
+    # NB: strip the OWNER only (it comes from a hand-edited .env and may carry
+    # stray whitespace). The sender arrives from the Telegram API as an int, so
+    # stripping it too would only loosen the compare and buy nothing.
+    owner = str(owner_chat_id).strip() if owner_chat_id is not None else ""
+    sender = str(chat_id) if chat_id is not None else ""
+    if not owner or not sender or sender != owner or owner == "None":
+        log.info("telegram.cmd_ignored_foreign", chat_id=sender or "<missing>",
+                 owner_configured=bool(owner) and owner != "None")
         return CommandResult(pending_confirm_until=pending_confirm_until,
                              ok=False)
 
@@ -132,7 +163,8 @@ def handle_message(text: str, chat_id, prefs: Prefs, *, owner_chat_id,
         # the previous config stays intact (PRD §7).
         log.info("telegram.cmd_rejected", cmd=cmd, error=str(e))
         return CommandResult(
-            reply=prefix + f"⚠️ {e}\nUnchanged: {prefs.summary()}",
+            reply=prefix + f"⚠️ {_esc(str(e))}\nUnchanged: "
+                           f"{_esc(prefs.summary())}",
             pending_confirm_until=pending_confirm_until, ok=False)
 
     if prefix and result.reply:
@@ -186,10 +218,18 @@ def _dispatch(cmd: str, args: list, prefs: Prefs, *, now: dt.datetime,
         label = f"Slot length: {candidate.slot_length_hours}h"
 
     elif cmd == "/cap":
-        if len(args) != 1 or not args[0].lstrip("+").isdigit():
+        # `.isdecimal()`, NOT `.isdigit()`: isdigit() is True for superscripts
+        # ('²', '⁵') that int() then REJECTS, so the guard and the conversion
+        # disagreed and the ValueError escaped handle_message entirely. In a
+        # long-poll daemon that's an unhandled exception per message.
+        if len(args) != 1 or not args[0].lstrip("+").isdecimal():
             raise PrefsError("Usage: /cap 3  (whole number ≥ 0; 0 pauses "
                              "booking).")
-        candidate = replace(prefs, weekly_cap=int(args[0]))
+        try:
+            cap_value = int(args[0])
+        except ValueError:                      # belt and braces
+            raise PrefsError("Usage: /cap 3  (whole number ≥ 0).")
+        candidate = replace(prefs, weekly_cap=cap_value)
         label = (f"Weekly cap: {candidate.weekly_cap}"
                  + (" — booking paused" if candidate.weekly_cap == 0 else ""))
 
@@ -199,6 +239,12 @@ def _dispatch(cmd: str, args: list, prefs: Prefs, *, now: dt.datetime,
 
     centres_for_check = (known_centres() if valid_centres is None
                          else tuple(valid_centres))
+    if cmd == "/centres" and not centres_for_check:
+        # Empty means "we couldn't read targets.yaml", NOT "anything goes".
+        # Skipping the membership check here let arbitrary text be persisted
+        # into prefs.json, which then broke every reply that rendered it.
+        raise PrefsError("Can't read the centre list right now, so I won't "
+                         "change centres. Try again shortly.")
     validate(candidate, centres_for_check or None)
     # Every change replies with the new value AND the whole active config, so
     # the phone always shows the full picture (§2.2).
@@ -221,7 +267,12 @@ def _live(args: list, prefs: Prefs, now: dt.datetime) -> CommandResult:
         return CommandResult(
             reply=f"⚠️ Enable REAL bookings? Reply <code>{CONFIRM_WORD}</code> "
                   f"within {int(CONFIRM_TIMEOUT.total_seconds() // 60)} min.",
-            pending_confirm_until=now + CONFIRM_TIMEOUT)
+            # Deadline computed in UTC, not wall clock. Adding a timedelta to a
+            # zone-aware London datetime does CIVIL arithmetic — on the autumn
+            # fall-back night 01:59 + 2min spans the repeated hour, giving a
+            # 62-MINUTE window on the one guard in front of real bookings.
+            pending_confirm_until=(now.astimezone(dt.timezone.utc)
+                                   + CONFIRM_TIMEOUT).astimezone(LONDON))
     raise PrefsError("Usage: /live on  ·  /live off")
 
 

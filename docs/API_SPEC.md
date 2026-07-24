@@ -60,6 +60,31 @@ previous config intact (acceptance criterion in the PRD).
 `slot_length_hours: 1`, `weekly_cap: 3`, `live: false`. Safe-by-default:
 dry-run, one hour, cap 3.
 
+### 1.4a Degraded reads — REFUSE TO BOOK (decided 2026-07-24)
+
+**Absent file ⇒ clean defaults. Present-but-unreadable ⇒ defaults marked
+`degraded`, and `live` is FORCED to `false`.**
+
+Why the asymmetry: every *constraint* field's default is the **permissive**
+value — no `days` filter means any day, no `earliest` means any time, and
+`weekly_cap` returns to 3. So falling back to defaults is right for a **fresh
+box** (nothing to misread) and wrong for a **configured box** (it silently
+*widens* what the bot may do). Concretely: the owner sets `/cap 0` to pause
+before a holiday while `live` is on; one field corrupts; the cap springs back
+to 3 and a live bot resumes holding courts on an account they deliberately
+paused.
+
+- `Prefs.degraded` is a tuple of the field names that failed to parse
+  (`"<document>"` / `"<unreadable file>"` when nothing could be read).
+- **Non-empty `degraded` ⇒ `live` is `false`, regardless of the file.**
+- `summary()` appends `⚠️ UNREADABLE: … — booking paused`, so `/status` and the
+  daily heartbeat tell the owner booking is paused and why.
+- A `version` newer than `SCHEMA_VERSION` counts as degraded: fields may have
+  changed meaning, so a v1 reader must not guess.
+
+Readers need no extra logic — `live` is already `false`. `degraded` is for
+reporting.
+
 ### 1.5 How each reader consumes it
 
 - **Catcher** (every cycle): read fresh (pick up phone changes next cycle);
@@ -135,6 +160,32 @@ transition (dry-run→live); everything else is instant. See ARCHITECTURE §8.8.
 | Empty poll cycle | *nothing* (silence by design). |
 
 ---
+
+## 2.5 Obligations on the transport (long-poll) — READ BEFORE BUILDING IT
+
+The handler is pure; these are the shell's responsibilities, and each one comes
+from a real defect found in review (2026-07-24). They are **not** optional.
+
+1. **Advance the `getUpdates` offset even when the handler raises.** Telegram
+   redelivers un-acknowledged updates forever, so an exception that escapes the
+   handler becomes an infinite redelivery loop — and with
+   `restart: unless-stopped` that is a **poison-message crash loop** that takes
+   the catcher's booking cycles down with it. Wrap `handle()` in a broad
+   `except`, log, reply "something went wrong", and advance regardless. (PRD §7:
+   "a crash in one cycle does not kill the loop".)
+2. **Catch write failures.** `CommandSession.handle` calls `save_prefs`, which
+   raises on a read-only or full volume — a plausible compose mis-mount, since
+   the sprinter mounts this volume `ro` by design. Do not let it kill the loop.
+3. **Pass zero-padded `HH:MM` to `allows_time()`.** It normalises `"9:00"` and
+   fails closed on anything unparseable, but the *week-grid parser* (a new page,
+   ARCHITECTURE §8.2) should emit padded times rather than rely on that.
+4. **Never send a reply built by string-concatenating user input.** Replies go
+   out with `parse_mode: HTML`; the handler already escapes at the render
+   boundary, so pass its `reply` through unmodified.
+5. **`TELEGRAM_CHAT_ID` must be set.** The handler fails closed when it is
+   missing or blank (it authorises nobody), so a misconfigured deployment is
+   inert rather than open — but that also means *no command will ever work*.
+   Check it at startup and log loudly.
 
 ## 3. Not in this contract (deliberately)
 

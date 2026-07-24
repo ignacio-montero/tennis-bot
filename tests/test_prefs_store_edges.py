@@ -81,26 +81,40 @@ def test_a_malformed_live_flag_always_reads_as_dry_run(tmp_path, doc):
     "true",                     # top-level bare `true` — the nastiest one
 ])
 def test_unparseable_documents_degrade_to_safe_defaults(tmp_path, doc):
-    # §1.1: absent/corrupt ⇒ defaults, never an exception. Note the last case:
+    # §1.1: absent/corrupt ⇒ safe values, never an exception. Note one case:
     # a file containing only `true` parses as valid JSON but isn't an object;
     # `from_dict` must reject it wholesale rather than truthily believing it.
+    # Since 2026-07-24 an unreadable document is ALSO marked degraded, which
+    # forces DRY-RUN — the values match defaults but the document is flagged
+    # as not-understood, so the readers refuse to book (API_SPEC §1.4).
     p = load_prefs(write(tmp_path, doc))
-    assert p == Prefs.defaults()
     assert p.live is False
+    assert p.degraded, "an unreadable document must be flagged degraded"
+    assert replace(p, degraded=()) == Prefs.defaults()
 
 
 def test_top_level_json_that_is_not_an_object_is_ignored(tmp_path):
     # Covers prefs.py:104-105 — the `isinstance(raw, dict)` guard. A JSON list
     # would otherwise blow up on `.get`, which is exactly the hard error §1.1
     # forbids.
-    assert load_prefs(write(tmp_path, '[{"live": true}]')) == Prefs.defaults()
+    p = load_prefs(write(tmp_path, '[{"live": true}]'))
+    assert p.live is False and p.degraded
+    assert replace(p, degraded=()) == Prefs.defaults()
 
 
-def test_a_valid_live_true_still_survives_a_corrupt_sibling_field(tmp_path):
-    # Fail-safe must not become fail-paranoid: per-field tolerance means one
-    # bad field doesn't silently flip the mode the owner deliberately set.
+def test_live_true_does_NOT_survive_a_corrupt_sibling_field(tmp_path):
+    # DECIDED 2026-07-24 (this test previously asserted the opposite, pinning
+    # the old trade-off for the owner to rule on). A corrupt sibling means we
+    # only partially understand the document — and EVERY constraint field's
+    # default is the PERMISSIVE value, so falling back silently WIDENS what the
+    # bot may do. Concretely: the owner sets `/cap 0` to pause before a
+    # holiday, one field corrupts, the cap springs back to 3 and a LIVE bot
+    # resumes holding courts on an account they deliberately paused.
+    # So: refuse to book on a half-read document (API_SPEC §1.4).
     p = load_prefs(write(tmp_path, '{"live": true, "weekly_cap": "lots"}'))
-    assert p.live is True and p.weekly_cap == 3
+    assert p.live is False, "a degraded document must force DRY-RUN"
+    assert "weekly_cap" in p.degraded
+    assert "booking paused" in p.summary()   # and the owner is told why
 
 
 # ---------------------------------------------------------------------------
@@ -169,10 +183,6 @@ def test_unknown_extra_fields_are_ignored_not_fatal(tmp_path):
 # test XPASSes and FAILS the build, forcing the marker to be removed.
 @pytest.mark.parametrize("doc", ['{"slot_length_hours": true}',
                                  '{"slot_length_hours": 2.0}'])
-@pytest.mark.xfail(strict=True, reason="BUG prefs.py:136-139 — `not in (1, 2)` "
-                                       "lets bool/float through (True == 1, "
-                                       "2.0 == 2); a float reaches the booker "
-                                       "and range(2.0) raises TypeError")
 def test_slot_length_must_be_a_real_int(tmp_path, doc):
     assert type(load_prefs(write(tmp_path, doc)).slot_length_hours) is int
 
@@ -181,7 +191,9 @@ def test_read_never_raises_even_when_the_path_is_a_directory(tmp_path):
     # A misconfigured volume mount can leave a *directory* named prefs.json.
     # IsADirectoryError must still degrade, not propagate into a booking job.
     (tmp_path / "prefs.json").mkdir()
-    assert load_prefs(tmp_path) == Prefs.defaults()
+    p = load_prefs(tmp_path)
+    assert p.live is False and p.degraded      # unreadable ⇒ refuse to book
+    assert replace(p, degraded=()) == Prefs.defaults()
 
 
 @skip_if_root
@@ -189,7 +201,9 @@ def test_read_never_raises_when_the_file_is_unreadable(tmp_path):
     f = write(tmp_path, '{"weekly_cap": 5}') / "prefs.json"
     f.chmod(0o000)
     try:
-        assert load_prefs(tmp_path) == Prefs.defaults()
+        p = load_prefs(tmp_path)
+        assert p.live is False and p.degraded  # unreadable ⇒ refuse to book
+        assert replace(p, degraded=()) == Prefs.defaults()
     finally:
         f.chmod(0o600)
 
@@ -548,3 +562,13 @@ def test_save_stamps_a_timezone_aware_london_timestamp(tmp_path):
     assert saved.updated_at == "2026-07-24T09:00:00+01:00"
     # ...and it must survive the round trip so /status can show provenance.
     assert load_prefs(tmp_path).updated_at == "2026-07-24T09:00:00+01:00"
+
+
+def test_validate_also_rejects_bool_slot_length():
+    # Regression guard for a gap the FIRST fix missed: from_dict was hardened
+    # against bool-is-int but validate() still used a bare `not in (1, 2)`, so
+    # the write path bypassed the read path's guard. Both doors need the lock.
+    for bad in (True, 2.0):
+        with pytest.raises(PrefsError):
+            validate(replace(Prefs.defaults(), slot_length_hours=bad),
+                     ["paddington"])

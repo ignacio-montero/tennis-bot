@@ -87,6 +87,13 @@ class Prefs:
     updated_at: str | None = None
     updated_by: str = "default"
     version: int = SCHEMA_VERSION
+    # Fields that failed to parse on read. NON-EMPTY ⇒ this document is only
+    # partially understood, so `live` is forced False (API_SPEC §1.4): every
+    # constraint field's default is the PERMISSIVE value (no days filter = any
+    # day, no earliest = any time, cap back to 3), so falling back to defaults
+    # on a *configured* box silently WIDENS what the bot may do. Refusing to
+    # book is the only safe direction when we can't read the owner's intent.
+    degraded: tuple[str, ...] = ()
 
     # -- (de)serialisation --------------------------------------------------
 
@@ -102,10 +109,14 @@ class Prefs:
         defaults and log" beats "crash on a stray value"."""
         d = cls.defaults()
         if not isinstance(raw, dict):
-            return d
+            # Not even an object — we understand nothing, so refuse to book.
+            return replace(d, degraded=("<document>",))
+
+        bad_fields: list[str] = []
 
         def _bad(field: str, value) -> None:
             log.warning("prefs.field_invalid", field=field, value=repr(value))
+            bad_fields.append(field)
 
         centres = raw.get("centres", d.centres)
         if (isinstance(centres, (list, tuple)) and centres
@@ -134,7 +145,10 @@ class Prefs:
                 times[field] = None
 
         length = raw.get("slot_length_hours", d.slot_length_hours)
-        if length not in (1, 2):
+        # `type(x) is int`, NOT `in (1, 2)`: bool is a subclass of int and
+        # True == 1, and 2.0 == 2, so a value test silently admits both. A
+        # float then reaches the booker, where range(2.0) raises TypeError.
+        if type(length) is not int or length not in (1, 2):
             _bad("slot_length_hours", length)
             length = d.slot_length_hours
 
@@ -148,14 +162,34 @@ class Prefs:
             _bad("live", live)
             live = d.live          # unreadable `live` ⇒ dry-run: fail SAFE
 
+        # Cross-field invariant: an inverted window can't come from the command
+        # path (_parse_window always replaces BOTH ends) but a hand-edit can,
+        # and it would make allows_time() reject everything, silently.
+        if (times["earliest"] is not None and times["latest"] is not None
+                and times["earliest"] >= times["latest"]):
+            _bad("window", f"{times['earliest']}-{times['latest']}")
+            times["earliest"] = times["latest"] = None
+
+        # A newer schema we don't understand: fields may have changed meaning,
+        # so treat the whole document as degraded rather than guessing.
+        version = raw.get("version")
+        if not isinstance(version, int) or isinstance(version, bool):
+            _bad("version", version)
+            version = SCHEMA_VERSION
+        elif version > SCHEMA_VERSION:
+            _bad("version", version)
+
+        degraded = tuple(dict.fromkeys(bad_fields))       # de-dup, keep order
+        if degraded:
+            live = False               # refuse to book on a half-read document
+
         return cls(
             centres=centres, days=days,
             earliest=times["earliest"], latest=times["latest"],
             slot_length_hours=length, weekly_cap=cap, live=live,
             updated_at=raw.get("updated_at") or None,
             updated_by=raw.get("updated_by") or d.updated_by,
-            version=raw.get("version") if isinstance(raw.get("version"), int)
-            else SCHEMA_VERSION,
+            version=version, degraded=degraded,
         )
 
     def to_dict(self) -> dict:
@@ -189,11 +223,24 @@ class Prefs:
         return self.allows_day(DAYS[d.weekday()])
 
     def allows_time(self, hhmm: str) -> bool:
-        """`earliest` inclusive, `latest` exclusive. Zero-padded HH:MM sorts
-        lexicographically, so plain string comparison is correct here."""
-        if self.earliest is not None and hhmm < self.earliest:
+        """`earliest` inclusive, `latest` exclusive.
+
+        Comparison is lexicographic, which is only correct for ZERO-PADDED
+        HH:MM — "9:00" > "18:00" as strings, so an unpadded time would sail
+        through an evening-only filter and book an 08:00 court. That was an
+        unenforced precondition on the caller; since the catcher needs a NEW
+        week-grid parser (ARCHITECTURE §8.2) that may well emit "9:00", we
+        normalise here and FAIL CLOSED on anything we can't parse.
+        """
+        t = (hhmm or "").strip()
+        if len(t) == 4 and t[1] == ":":            # "9:00" -> "09:00"
+            t = "0" + t
+        if not _HHMM.match(t):
+            log.warning("prefs.allows_time_malformed", value=hhmm)
+            return False                            # unparseable ⇒ don't book
+        if self.earliest is not None and t < self.earliest:
             return False
-        if self.latest is not None and hhmm >= self.latest:
+        if self.latest is not None and t >= self.latest:
             return False
         return True
 
@@ -205,10 +252,15 @@ class Prefs:
     def summary(self) -> str:
         """One-line "whole picture" line appended to every config change reply
         (API_SPEC §2.2), leading with the mode (§8.8: mode always surfaced)."""
-        return (f"{self.mode} · {'+'.join(self.centres)} · "
+        base = (f"{self.mode} · {'+'.join(self.centres)} · "
                 f"{','.join(self.days) if self.days else 'any day'} · "
                 f"{self.window_text()} · {self.slot_length_hours}h · "
                 f"cap {self.weekly_cap}")
+        if self.degraded:
+            # Must be loud: a degraded document has already forced DRY-RUN, and
+            # the owner needs to know booking is paused and why (§8.9).
+            base += f"  ⚠️ UNREADABLE: {','.join(self.degraded)} — booking paused"
+        return base
 
 
 def _canonical_days(days: Iterable[str]) -> tuple[str, ...]:
@@ -262,7 +314,12 @@ def validate(prefs: Prefs, valid_centres: Iterable[str] | None = None) -> None:
             and prefs.earliest >= prefs.latest):
         raise PrefsError(f"Window start must be before end — got "
                          f"{prefs.earliest}-{prefs.latest}.")
-    if prefs.slot_length_hours not in (1, 2):
+    # `type(...) is not int` for the same bool-is-int reason as from_dict: a
+    # plain `not in (1, 2)` accepts True (== 1) and 2.0 (== 2). Both paths that
+    # can produce a document must enforce this, or the read path's guard is
+    # just bypassed by the write path.
+    if (type(prefs.slot_length_hours) is not int
+            or prefs.slot_length_hours not in (1, 2)):
         raise PrefsError("Slot length must be 1 or 2 hours.")
     if (not isinstance(prefs.weekly_cap, int) or isinstance(prefs.weekly_cap, bool)
             or prefs.weekly_cap < 0):
@@ -273,8 +330,12 @@ def validate(prefs: Prefs, valid_centres: Iterable[str] | None = None) -> None:
 
 
 def known_centres() -> tuple[str, ...]:
-    """Target keys from config/targets.yaml, or () if it can't be read (the
-    handler then skips the membership check rather than rejecting everything)."""
+    """Target keys from config/targets.yaml, or () if it can't be read.
+
+    ⚠️ `()` means "unknown", NOT "anything goes". Callers must REJECT a centre
+    change when this is empty rather than skipping the membership check —
+    skipping it let arbitrary text be persisted into prefs.json, which then
+    broke every future reply that rendered it. Fail closed."""
     try:
         from .config import load_targets
         return tuple(load_targets().keys())
@@ -299,15 +360,26 @@ def prefs_path(config_dir_override: str | Path | None = None) -> Path:
 
 
 def load_prefs(config_dir_override: str | Path | None = None) -> Prefs:
-    """Read the active prefs. Absent file / bad JSON ⇒ defaults (§1.1, §1.4)."""
+    """Read the active prefs. Never raises (§1.1) — an unattended booker must
+    always get a usable document.
+
+    Note the deliberate asymmetry between the two failure paths:
+
+    - **Absent** file ⇒ clean defaults. A fresh box has nothing to misread, and
+      §1.4 promises it boots usable.
+    - **Present but unreadable** ⇒ defaults *marked degraded*, which forces
+      DRY-RUN. Something WAS configured and we can't read it, so we don't know
+      the owner's intent — and every constraint default is the permissive one,
+      so proceeding would silently widen what the bot may do.
+    """
     p = prefs_path(config_dir_override)
     try:
         raw = json.loads(p.read_text())
     except FileNotFoundError:
-        return Prefs.defaults()
+        return Prefs.defaults()                 # fresh box: nothing to misread
     except Exception as e:
         log.warning("prefs.unreadable", path=str(p), error=str(e))
-        return Prefs.defaults()
+        return replace(Prefs.defaults(), degraded=("<unreadable file>",))
     return Prefs.from_dict(raw)
 
 
@@ -335,6 +407,18 @@ def save_prefs(prefs: Prefs, config_dir_override: str | Path | None = None,
             f.flush()
             os.fsync(f.fileno())        # data on disk before the rename
         os.replace(tmp, str(d / PREFS_FILENAME))
+        # fsync the DIRECTORY too: the file's bytes are durable after the
+        # fsync above, but the rename itself isn't until the directory entry
+        # is flushed. Without this a power cut can resurrect the previous
+        # prefs.json — and "previous" might be a document with live: true.
+        try:
+            dfd = os.open(str(d), os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:                 # best-effort; not all FSs allow it
+            pass
     except Exception:
         try:
             os.unlink(tmp)

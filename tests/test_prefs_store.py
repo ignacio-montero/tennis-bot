@@ -3,6 +3,8 @@ no real config dir — every test gets its own tmp_path."""
 
 import json
 
+from dataclasses import replace
+
 import pytest
 
 from tennisbot.prefs import (CONFIG_DIR_ENV, Prefs, PrefsError, config_dir,
@@ -30,8 +32,13 @@ def test_absent_directory_yields_defaults(tmp_path):
 
 def test_corrupt_json_yields_defaults_not_an_exception(tmp_path):
     # A truncated or hand-edited file must not wedge an unattended booker.
+    # It IS marked degraded though (a present-but-unreadable file means someone
+    # configured something we can't read), which forces DRY-RUN — see
+    # test_live_true_does_NOT_survive_a_corrupt_sibling_field for the why.
     (tmp_path / "prefs.json").write_text("{not json at all")
-    assert load_prefs(tmp_path) == Prefs.defaults()
+    p = load_prefs(tmp_path)
+    assert p.live is False and p.degraded
+    assert replace(p, degraded=()) == Prefs.defaults()
 
 
 def test_missing_fields_fall_back_per_field(tmp_path):

@@ -340,10 +340,6 @@ def test_cap_rejects_anything_that_is_not_a_whole_number(arg):
     assert r.prefs is None and r.ok is False
 
 
-@pytest.mark.xfail(strict=True, reason="BUG telegram_commands.py:189-192 — "
-                                       "`str.isdigit()` is True for '²'/'⁵' "
-                                       "but int() then raises ValueError, "
-                                       "which escapes handle_message()")
 @pytest.mark.parametrize("arg", ["²", "⁵"])
 def test_cap_with_a_superscript_digit_is_rejected_not_crashed(arg):
     r = send(f"/cap {arg}")
@@ -412,12 +408,19 @@ def test_centres_rejects_unknown_keys_and_lists_the_valid_ones(arg):
     assert "paddington" in r.reply
 
 
-def test_an_unknown_centre_is_accepted_when_targets_cannot_be_read():
-    # Deliberate fail-open (prefs.py:275-283): losing targets.yaml must not
-    # lock the owner out of their own bot. Pinned so the trade-off is visible.
+def test_an_unknown_centre_is_REJECTED_when_targets_cannot_be_read():
+    # DECIDED 2026-07-24 (this test previously asserted the opposite, pinning
+    # the old fail-open for the owner to rule on). An empty centre list means
+    # "we couldn't read targets.yaml", NOT "anything goes" — skipping the
+    # membership check let arbitrary text be PERSISTED into prefs.json, and
+    # that text was then rendered into every future reply, breaking the only
+    # observability channel until the file was hand-edited. Fail closed:
+    # refuse the change and say so; the owner can retry.
     r = handle_message("/centres atlantis", OWNER, Prefs.defaults(),
                        owner_chat_id=OWNER, now=NOW, valid_centres=[])
-    assert r.prefs.centres == ("atlantis",)
+    assert r.prefs is None, "must not persist an unvalidated centre"
+    assert r.ok is False
+    assert "centre list" in r.reply
 
 
 @pytest.mark.parametrize("text", ["/CAP 3", "/Cap 3", "/cap@tennisbot 3",
@@ -467,26 +470,12 @@ def test_start_is_an_alias_for_help():
     assert send("/start").reply == HELP
 
 
-@pytest.mark.xfail(strict=True, reason="BUG telegram_commands.py:135/168/197 & "
-                                       "prefs.py:255 — user text is echoed "
-                                       "into replies unescaped, but "
-                                       "notify/telegram.py sends parse_mode="
-                                       "HTML and raise_for_status()s, so a "
-                                       "message containing '<' makes the "
-                                       "Telegram API 400 and the reply is lost")
 @pytest.mark.parametrize("text", ["/centres <b>oops", "/days <i", "/window <b-"])
 def test_user_text_echoed_back_is_html_escaped(text):
     r = send(text)
     assert "<b" not in r.reply and "<i" not in r.reply
 
 
-@pytest.mark.xfail(strict=True, reason="BUG telegram_commands.py:224 — the "
-                                       "deadline is computed by adding to a "
-                                       "WALL-CLOCK London datetime, so on the "
-                                       "DST fall-back night the 2-minute "
-                                       "confirm window lasts 62 minutes. Low "
-                                       "severity, but it is the one guard on "
-                                       "real bookings")
 def test_the_confirm_window_is_two_real_minutes_even_across_a_dst_fold():
     base = dt.datetime(2027, 10, 31, 1, 59, tzinfo=LONDON)   # BST→GMT that night
     deadline = send("/live on", now=base).pending_confirm_until
