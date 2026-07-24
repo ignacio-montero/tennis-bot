@@ -53,6 +53,13 @@ Targets/surfaces/activities are configured in `config/targets.yaml`.
   — storage_state. `notify/telegram.py` — notifications. `cli.py` — entrypoint.
 - `clock.py` — NTP/server-skew + spin-wait. `watch.py` — one-evening drop
   watcher. `watchd.py` — 24/7 drop-hunter daemon (runs on the homelab).
+- `prefs.py` — shared `prefs.json` store (API_SPEC §1): env-injected
+  `TENNISBOT_CONFIG_DIR`, tolerant read → defaults, atomic temp-file+`os.replace`
+  write, validation. `telegram_commands.py` — inbound command surface
+  (API_SPEC §2), pure `handle_message()` + `CommandSession` seam.
+  ⚠️ **Both are built and tested but NOT yet wired to anything** — no CLI
+  command, no long-poll transport, and neither the catcher nor the sprinter
+  reads them yet (see NEXT_STEPS).
 
 ## Key facts & gotchas (learned the hard way)
 - **Connect entry is 3-tier** (most→least robust): reuse saved Connect session →
