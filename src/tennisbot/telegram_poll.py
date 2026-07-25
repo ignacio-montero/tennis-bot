@@ -41,6 +41,16 @@ from .telegram_commands import CommandSession
 
 log = structlog.get_logger()
 
+
+class TransportError(RuntimeError):
+    """A transient getUpdates failure (network, 5xx, 429, 409). Token-redacted;
+    the outer loop backs off and retries."""
+
+
+class FatalTransportError(TransportError):
+    """A non-recoverable getUpdates failure (401/404 = bad token). The loop must
+    STOP — retrying forever would look healthy while doing nothing."""
+
 # Long-poll hold time on the Telegram side (seconds). The HTTP read timeout must
 # exceed this or httpx aborts the connection every cycle (see make_http_fetch).
 DEFAULT_POLL_TIMEOUT = 30
@@ -195,12 +205,36 @@ def make_http_fetch(token: str, poll_timeout: int = DEFAULT_POLL_TIMEOUT,
     owns_client = client is None
     client = client or httpx.Client(timeout=poll_timeout + 15)
 
+    def _redact(text: str) -> str:
+        return text.replace(token, "***") if token else text
+
     def fetch(offset):
         params: dict[str, object] = {"timeout": poll_timeout}
         if offset:
             params["offset"] = offset
-        r = client.get(f"{base}/getUpdates", params=params)
-        r.raise_for_status()
+        try:
+            r = client.get(f"{base}/getUpdates", params=params)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            # 401 (revoked/typo'd token) and 404 (malformed token) are NOT
+            # transient — retrying loops forever looking healthy while inert,
+            # AND re-leaks nothing now but wastes cycles. Fail loud (§2.5.5's
+            # spirit: a misconfigured deploy must not be silently useless).
+            # 409 = another getUpdates consumer on this token; distinct log so
+            # the thrash is diagnosable. `_redact` guards the URL-embedded token
+            # in every raised message (CWE-532).
+            if code in (401, 404):
+                raise FatalTransportError(
+                    f"Telegram rejected the token (HTTP {code}) — check "
+                    f"TELEGRAM_BOT_TOKEN. Refusing to spin uselessly.") from None
+            if code == 409:
+                raise TransportError(
+                    "HTTP 409 — another getUpdates consumer is using this "
+                    "token (only one is allowed). Backing off.") from None
+            raise TransportError(f"getUpdates HTTP {code}") from None
+        except httpx.HTTPError as e:                 # connect/read/timeout etc.
+            raise TransportError(_redact(str(e))) from None
         return r.json().get("result", [])
 
     fetch._client = client            # type: ignore[attr-defined]
@@ -246,10 +280,16 @@ def run_prefs_transport(*, config_dir=None, notify: bool = True,
                 offset = poll_once(fetch, session, send, offset,
                                    paid_this_week=paid_this_week,
                                    next_scan=next_scan)
+            except FatalTransportError as e:
+                # A bad token can never become good by retrying — stop loudly so
+                # `restart: unless-stopped` surfaces it, not a silent inert loop.
+                log.error("prefs_transport.fatal", error=str(e))
+                raise
             except Exception as e:
                 # A network hiccup on getUpdates must not kill the daemon — back
                 # off briefly and retry. (Per-update handler errors are already
-                # contained inside process_update.)
+                # contained inside process_update.) `str(e)` is safe: fetch
+                # redacts the token before raising.
                 log.warning("prefs_transport.poll_error",
                             error=str(e), error_type=type(e).__name__)
                 time.sleep(error_backoff_s)
