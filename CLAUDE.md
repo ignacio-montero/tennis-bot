@@ -40,13 +40,33 @@ the Everyone Active app. **Payment / 3DS is intentionally out of scope.**
 
 # 24/7 drop-time hunter daemon (runs on the homelab; local test needs PYTHONPATH):
 PYTHONPATH=src .venv/bin/python -m tennisbot watchd --max-cycles 1 --no-notify
+
+# Cancellation catcher: poll D0–D+7, book matched cancellations (dry-run unless
+# prefs.live). Self-scheduling loop; --max-cycles bounds it for tests.
+PYTHONPATH=src .venv/bin/python -m tennisbot catch-loop --max-cycles 1 --no-notify
 ```
 Targets/surfaces/activities are configured in `config/targets.yaml`.
 `--time HH:MM` overrides ranked prefs (books that time, any court).
 
+## Cancellation catcher — CORE BUILT, dry-run, NOT deployed ⏳ (2026-07-25)
+`tennisbot catch-loop` (`catcher.py`) polls D0–D+7 every 30 min for freed courts
+matching the shared `prefs.json` and books them via the EXISTING single-date
+engine (re-search seam, §8.2 — no click-through). Ships **dry-run**; goes live
+only if `prefs.live`. Structure: pure logic (week-grid parser, matcher, weekly
+cap, lapsed-hold policy §4.4, `plan_cycle`) is unit-tested offline; the browser
+lives behind an injectable `_PlaywrightScanner` (tests pass a FAKE — no Chromium).
+Inherits watchd's blackouts (§8.4). State (per-slot re-book memory + heartbeat +
+cap-notice) in `$CATCHER_STATE_DIR/catcher-state.json` (bracket.json idiom).
+⚠️ **NOT wired to the Telegram transport yet** (deferred): the `prefs`/getUpdates
+poll thread and the `paid_this_week`/`next_scan` injection into `/status` are the
+next increment. No deploy/compose done.
+
 ## Architecture (code map)
 - `providers/everyoneactive.py` — login, robust Connect entry, search, results
-  row-matching, court-grid + class parsers, hold.
+  row-matching, court-grid + class parsers, hold. `read_week_grid` reads the
+  catcher's `mrmResourceStatus.aspx` week view (parse logic in `catcher.py`).
+- `catcher.py` — cancellation catcher: pure detect/match/cap/lapsed-hold logic +
+  `run_catcher_loop` (self-scheduling, blackout-aware, fake-injectable scanner).
 - `runner.py` — orchestration: court mode (surface loop + 2h), activity mode,
   dry-run vs live, screenshots, Telegram.
 - `discover.py` — `discover` command. `config.py` — typed config. `session.py`
