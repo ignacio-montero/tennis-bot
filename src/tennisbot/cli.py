@@ -110,6 +110,15 @@ def main(argv: list[str] | None = None) -> int:
     dl.add_argument("--no-notify", action="store_true")
     dl.add_argument("--headed", action="store_true")
 
+    pf = sub.add_parser("prefs", help="Inbound Telegram config transport "
+                        "(long-poll getUpdates; feeds CommandSession).")
+    pf.add_argument("--poll-timeout", type=int, default=30,
+                    help="getUpdates long-poll hold time, seconds.")
+    pf.add_argument("--max-iterations", type=int,
+                    help="Stop after N poll cycles (testing; default forever).")
+    pf.add_argument("--no-notify", action="store_true",
+                    help="Don't send replies (dev/testing).")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "discover":
@@ -153,6 +162,13 @@ def main(argv: list[str] | None = None) -> int:
                       headless=not args.headed, max_iters=args.max_iters,
                       epsilon=args.epsilon, retry_window_s=args.retry_window,
                       retry_gap_s=args.retry_gap)
+        return 0
+
+    if args.cmd == "prefs":
+        from .telegram_poll import run_prefs_transport
+        run_prefs_transport(notify=not args.no_notify,
+                            poll_timeout=args.poll_timeout,
+                            max_iterations=args.max_iterations)
         return 0
 
     if args.cmd == "run-now":
