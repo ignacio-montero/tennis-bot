@@ -399,6 +399,39 @@ class EveryoneActiveProvider:
         log.info("hold.committed", url=page.url, ref=ref)
         return ref
 
+    def read_week_grid(self, page: Page) -> list:
+        """Read the week-view grid (`mrmResourceStatus.aspx`) into `WeekSlot`s.
+
+        The catcher's DETECTION page (recon/FINDINGS.md → "Week-view grid"): rows
+        = times, columns = the 7 dates, cells carry a structured `data-qa-id`
+        encoding ActivityID + date + time + availability. This method is the thin
+        DOM-extraction edge only — it pulls each cell's corroborating signals and
+        hands them to the PURE `catcher.parse_week_cells`, which owns the parse
+        logic (and is unit-tested with no browser)."""
+        from ..catcher import parse_week_cells        # lazy: avoid import cycle
+        cells = page.evaluate(
+            """() => {
+                const out = [];
+                const inputs = [...document.querySelectorAll(
+                    'input[data-qa-id^="button-ActivityID"]')];
+                for (const b of inputs) {
+                    const td = b.closest('td');
+                    out.push({
+                        qa: b.getAttribute('data-qa-id') || '',
+                        value: (b.value || '').trim(),
+                        tdcls: td ? (td.className || '') : '',
+                        disabled: b.disabled || b.hasAttribute('disabled'),
+                    });
+                }
+                return out;
+            }"""
+        )
+        slots = parse_week_cells(cells)
+        avail = sum(1 for s in slots if s.state == "available")
+        log.info("week_grid.parsed", cells=len(cells), slots=len(slots),
+                 available=avail)
+        return slots
+
     def parse_timetable(self, page: Page, date: str) -> list["Slot"]:
         """Parse the single-day per-court grid. Buttons have no id, so we tag
         each with a data-tb attribute for reliable clicking, map it to its

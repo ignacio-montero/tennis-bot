@@ -110,6 +110,18 @@ def main(argv: list[str] | None = None) -> int:
     dl.add_argument("--no-notify", action="store_true")
     dl.add_argument("--headed", action="store_true")
 
+    cl = sub.add_parser("catch-loop", help="Cancellation catcher: poll D0–D+7 "
+                        "every interval, book matched cancellations (dry-run "
+                        "unless prefs.live). Self-scheduling homelab sidecar.")
+    cl.add_argument("--interval-min", type=float, default=30.0,
+                    help="Minutes between scan cycles (default 30).")
+    cl.add_argument("--max-cycles", type=int,
+                    help="Stop after N cycles (testing; default forever).")
+    cl.add_argument("--no-notify", action="store_true",
+                    help="Suppress Telegram messages (for dev/testing).")
+    cl.add_argument("--headed", action="store_true",
+                    help="Show the browser window.")
+
     pf = sub.add_parser("prefs", help="Inbound Telegram config transport "
                         "(long-poll getUpdates; feeds CommandSession).")
     pf.add_argument("--poll-timeout", type=int, default=30,
@@ -162,6 +174,13 @@ def main(argv: list[str] | None = None) -> int:
                       headless=not args.headed, max_iters=args.max_iters,
                       epsilon=args.epsilon, retry_window_s=args.retry_window,
                       retry_gap_s=args.retry_gap)
+        return 0
+
+    if args.cmd == "catch-loop":
+        from .catcher import run_catcher_loop
+        run_catcher_loop(interval_min=args.interval_min,
+                         max_cycles=args.max_cycles,
+                         notify=not args.no_notify, headless=not args.headed)
         return 0
 
     if args.cmd == "prefs":
