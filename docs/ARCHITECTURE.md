@@ -541,6 +541,16 @@ availability per (date, time) but **not per court**. So the catcher needs a
 the **existing single-date booking flow** (`_run_court` → court pick →
 `_commit_hold`) to *book*. That detect→book seam is the main new build.
 
+**De-risked by spike (2026-07-25).** The parser is easier than feared — EA gives
+each cell a structured `data-qa-id` (date + time + state), so parsing needs no
+fragile column-index→date mapping; and the cell's `<input>` IS the booking
+control (an ASP.NET `__doPostBack`), so the detect→book seam is "click the
+matching cell → reuse the existing hold flow", not a re-implementation. Full
+markup + parse recipe in `recon/FINDINGS.md` → "Week-view grid". One surprise
+worth carrying into the build: a **third cell state, `My Booking`** (already
+held) — the grid surfaces the account's existing holds directly, which the cap /
+idempotency logic can use instead of a separate Manage Bookings lookup.
+
 ### 8.3 Regression detection (watchd's role, done right)
 
 The signal is **not** court volume ("lots of courts in D+7" fires on every
