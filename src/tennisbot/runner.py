@@ -21,6 +21,7 @@ from . import clock
 from .config import Secrets, Target, load_targets
 from .models import RunResult, Slot
 from .notify.telegram import Telegram
+from .prefs import load_prefs
 from .providers.everyoneactive import EveryoneActiveProvider, make_context
 
 log = structlog.get_logger()
@@ -343,7 +344,8 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
              retry_gap_s: float = 1.0,
              after_time: str | None = None,
              prewarm_attempts: int = 3,
-             prewarm_floor_s: float = 25.0) -> RunResult:
+             prewarm_floor_s: float = 25.0,
+             two_hours: bool | None = None) -> RunResult:
     """Pre-warm a session, spin-wait to the server-clock drop instant, then
     'camp' the booking: retry rapidly through overload / not-yet-dropped until it
     books or `retry_window_s` elapses. Targets the date the drop releases
@@ -355,10 +357,22 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
     `prewarm_attempts` / `prewarm_floor_s` bound the cold-login retries: keep
     trying to arm until we succeed, run out of attempts, or get within
     `prewarm_floor_s` of the instant (never still be logging in at the drop).
+
+    `two_hours` (None = leave the configured value untouched; the loop passes
+    True when `prefs.slot_length_hours == 2`) toggles the target's two-consecutive-
+    hours mode WITHOUT modifying the booking engine — it reuses the catcher's
+    behaviour-preserving `dataclasses.replace` trick (`_with_two_hours`). None is
+    the default so a direct `run_drop`/`drop` call behaves exactly as before.
     """
     import time as _time
     secrets = Secrets.from_env()
     target = load_targets()[target_key]
+    if two_hours is not None:
+        # Reuse the catcher's helper so the drop and the catcher feed the engine
+        # the same replace()-copied target; lazy import avoids a runner<->catcher
+        # import cycle (catcher imports runner inside its functions).
+        from .catcher import _with_two_hours
+        target = _with_two_hours(target, two_hours)
     tg = (Telegram(secrets.telegram_bot_token, secrets.telegram_chat_id)
           if notify else _NullTelegram())
     drop_local = time_override or target.drop.local_time
@@ -526,7 +540,7 @@ def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
                   dry_run: bool = True, notify: bool = True,
                   headless: bool = True, max_iters: int | None = None,
                   epsilon: float = 0.15, retry_window_s: float = 90.0,
-                  retry_gap_s: float = 1.0) -> None:
+                  retry_gap_s: float = 1.0, config_dir=None) -> None:
     """Self-scheduling nightly drop booker — the homelab `drop` sidecar.
 
     One long-running container (no host cron, no Docker socket): each night it
@@ -537,6 +551,24 @@ def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
     instant is handled we schedule strictly past it, so a fast pre-warm failure
     can't hot-spin the loop (the real drop contention is handled inside
     `run_drop`'s camp/retry window, not here).
+
+    **Shared prefs govern BOTH jobs (ARCHITECTURE §8.6).** Each night, at pre-arm
+    (after the sleep, so the read is fresh — API_SPEC §1.5), it reads the same
+    `prefs.json` the catcher does. This makes the sprinter *day-filtered*: the
+    drop only ever releases a single weekday (D+7), so with e.g. `days:[Tue,Thu]`
+    it acts only on nights whose D+7 is preferred and skips the rest — WITHOUT
+    logging in (no EA session spent on an unwanted night).
+
+    **Strict backward-compatibility.** Precedence is "a *set* prefs field wins,
+    else fall back to the CLI arg": `prefs.earliest`→`after_time`,
+    `prefs.slot_length_hours==2`→two-hours, live gate = `prefs.live OR --live`.
+    With no `prefs.json` (or an all-default one) every field is at its permissive
+    default, so day-filter never skips, `after_time`/two-hours are untouched, and
+    the effective dry-run equals the CLI `--live` flag — i.e. IDENTICAL firing to
+    before this change (proved by `test_drop_loop_default_prefs_identical_firing`).
+
+    `config_dir` overrides the prefs location; None = the env-based default
+    (`$TENNISBOT_CONFIG_DIR`), exactly like the catcher.
     """
     import time as _time
     d = load_targets()[target_key].drop
@@ -555,12 +587,43 @@ def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
             log.info("drop_loop.sleep", wake_in_s=round(gap),
                      drop_date=target_date, lead_min=lead_min)
             _time.sleep(gap)
-        log.info("drop_loop.fire", drop_date=target_date, dry_run=dry_run)
+
+        # Pre-arm: read the shared prefs fresh (governs both jobs, §8.6). Never
+        # raises — a missing/corrupt file degrades to safe defaults (§1.1/§1.4a).
+        prefs = load_prefs(config_dir)
+
+        # Day-filter (§8.6): the drop releases exactly one weekday (D+7). If that
+        # weekday isn't preferred, skip tonight and reschedule to the next night
+        # — crucially WITHOUT logging in, so we don't burn an EA session (or race
+        # the blackout) on a night we don't want a court anyway. Empty `days`
+        # ⇒ allows_date is always True ⇒ this never fires (backward-compatible).
+        if not prefs.allows_date(target_date):
+            log.info("drop_loop.skipped_not_preferred_day",
+                     drop_date=target_date, days=list(prefs.days))
+            handled = instant
+            continue
+
+        # Precedence: a SET prefs field wins; otherwise fall back to the CLI arg
+        # so no/default prefs behaves exactly as today.
+        eff_after = prefs.earliest if prefs.earliest is not None else after_time
+        # slot_length_hours: only force two-hours ON (==2). ==1 is the default and
+        # is indistinguishable from "unset", so forcing it OFF could override the
+        # target's own config on a default read — which backward-compat forbids.
+        eff_two_hours = True if prefs.slot_length_hours == 2 else None
+        # Live gate = prefs.live OR --live (the unified Telegram-live AND a
+        # deploy-level --live both work). `prefs.degraded` forces dry-run: a
+        # half-read config means we can't trust the owner's intent, so refuse to
+        # book live even if --live is set (§1.4a "refuse to book").
+        live = (prefs.live or (not dry_run)) and not prefs.degraded
+
+        log.info("drop_loop.fire", drop_date=target_date, dry_run=not live,
+                 mode=("LIVE" if live else "DRY-RUN"), after_time=eff_after,
+                 two_hours=bool(eff_two_hours), degraded=list(prefs.degraded))
         try:
-            run_drop(target_key=target_key, dry_run=dry_run, headless=headless,
-                     want_time=want_time, after_time=after_time, notify=notify,
-                     epsilon=epsilon, retry_window_s=retry_window_s,
-                     retry_gap_s=retry_gap_s)
+            run_drop(target_key=target_key, dry_run=not live, headless=headless,
+                     want_time=want_time, after_time=eff_after,
+                     two_hours=eff_two_hours, notify=notify, epsilon=epsilon,
+                     retry_window_s=retry_window_s, retry_gap_s=retry_gap_s)
         except Exception as e:                       # never let one night kill the loop
             log.error("drop_loop.iter_failed", err=str(e))
         handled = instant

@@ -192,3 +192,127 @@ def test_no_observation_is_not_never_opened():
     code, _ = diagnose_drop_failure(grid_seen=False, n_avail=0)
     assert code == "never_opened"          # classifier only sees observed runs
     assert code != "no_observation"        # crash path emits that, separately
+
+
+# ── sprinter reads shared prefs (ARCHITECTURE §8.6) ─────────────────────────
+# The drop loop now reads the same prefs.json the catcher does, so ONE config
+# governs both jobs. These tests exercise the loop offline: run_drop and
+# load_prefs are stubbed (mirroring test_drop_loop_* above), so NO EA/Telegram
+# network call is ever made — a live drop fires nightly on the box, so the tests
+# must never risk it.
+
+import datetime as _dt
+
+from tennisbot.prefs import Prefs
+
+
+def _abbr(iso: str) -> str:
+    return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
+            "Sun"][_dt.date.fromisoformat(iso).weekday()]
+
+
+def _loop_env(monkeypatch, prefs=None):
+    """Wire the loop for offline testing: fake target, no-op sleep, run_drop and
+    _next_drop stubbed. Returns the `fired` list capturing run_drop's kwargs.
+    If `prefs` is given, load_prefs is stubbed to return it; otherwise the real
+    load_prefs runs (used by the backward-compat test with an empty dir)."""
+    import time as _t
+    from tennisbot import runner
+    monkeypatch.setattr(runner, "load_targets",
+                        lambda: {"paddington": _target(False)})
+    monkeypatch.setattr(_t, "sleep", lambda *a, **k: None)
+    fired = []
+    monkeypatch.setattr(runner, "run_drop", lambda **k: fired.append(k))
+    if prefs is not None:
+        monkeypatch.setattr(runner, "load_prefs", lambda *a, **k: prefs)
+    return runner, fired
+
+
+def _pin_next_drop(monkeypatch, runner, target_date: str):
+    """Force _next_drop to a fixed (instant, target_date) so a test controls the
+    weekday the drop releases — otherwise it depends on the real 'today'."""
+    monkeypatch.setattr(runner, "_next_drop",
+                        lambda *a, **k: (1_000_000_000.0, target_date))
+
+
+def test_drop_loop_default_prefs_identical_firing(monkeypatch, tmp_path):
+    # CRITICAL backward-compat: with NO prefs.json present, the loop must behave
+    # EXACTLY as before — fire every night, honour the CLI --after and --live,
+    # and add no two-hours override. Uses the REAL load_prefs over an empty dir
+    # so we exercise the true absent-file → defaults path.
+    runner, fired = _loop_env(monkeypatch)          # real load_prefs
+    runner.run_drop_loop(target_key="paddington", after_time="19:00",
+                         dry_run=True, notify=False, max_iters=3,
+                         config_dir=str(tmp_path))
+    assert len(fired) == 3                           # never day-filter-skipped
+    for k in fired:
+        assert k["dry_run"] is True                  # --live absent ⇒ dry-run
+        assert k["after_time"] == "19:00"            # CLI --after passed through
+        assert k["two_hours"] is None                # config two_hours untouched
+
+
+def test_drop_loop_default_prefs_live_flag_still_books(monkeypatch, tmp_path):
+    # The deploy-level --live must still work when prefs is absent/default.
+    runner, fired = _loop_env(monkeypatch)
+    runner.run_drop_loop(target_key="paddington", dry_run=False, notify=False,
+                         max_iters=1, config_dir=str(tmp_path))
+    assert len(fired) == 1 and fired[0]["dry_run"] is False
+
+
+def test_drop_loop_skips_non_preferred_day(monkeypatch):
+    # days=[<not the release weekday>] ⇒ skip the drop that night and reschedule,
+    # WITHOUT calling run_drop (i.e. without logging in).
+    target_date = "2026-08-04"
+    others = tuple(d for d in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+                   if d != _abbr(target_date))
+    runner, fired = _loop_env(monkeypatch, prefs=Prefs(days=others))
+    _pin_next_drop(monkeypatch, runner, target_date)
+    runner.run_drop_loop(target_key="paddington", notify=False, max_iters=2)
+    assert fired == []                               # never booked / logged in
+
+
+def test_drop_loop_fires_on_preferred_day(monkeypatch):
+    # days=[<the release weekday>] ⇒ the drop DOES fire.
+    target_date = "2026-08-04"
+    runner, fired = _loop_env(monkeypatch,
+                              prefs=Prefs(days=(_abbr(target_date),)))
+    _pin_next_drop(monkeypatch, runner, target_date)
+    runner.run_drop_loop(target_key="paddington", notify=False, max_iters=1)
+    assert len(fired) == 1                            # preferred day ⇒ books
+
+
+def test_drop_loop_prefs_earliest_overrides_cli_after(monkeypatch):
+    # A SET prefs.earliest wins over the CLI --after (precedence rule).
+    runner, fired = _loop_env(monkeypatch, prefs=Prefs(earliest="18:00"))
+    _pin_next_drop(monkeypatch, runner, "2026-08-04")
+    runner.run_drop_loop(target_key="paddington", after_time="20:00",
+                         notify=False, max_iters=1)
+    assert len(fired) == 1 and fired[0]["after_time"] == "18:00"
+
+
+def test_drop_loop_slot_length_two_forces_two_hours(monkeypatch):
+    # prefs.slot_length_hours==2 ⇒ two_hours override True; ==1 (default) ⇒ None.
+    runner, fired = _loop_env(monkeypatch, prefs=Prefs(slot_length_hours=2))
+    _pin_next_drop(monkeypatch, runner, "2026-08-04")
+    runner.run_drop_loop(target_key="paddington", notify=False, max_iters=1)
+    assert len(fired) == 1 and fired[0]["two_hours"] is True
+
+
+def test_drop_loop_prefs_live_flips_to_live(monkeypatch):
+    # prefs.live true ⇒ the loop books live even with no CLI --live (dry_run=True).
+    runner, fired = _loop_env(monkeypatch, prefs=Prefs(live=True))
+    _pin_next_drop(monkeypatch, runner, "2026-08-04")
+    runner.run_drop_loop(target_key="paddington", dry_run=True, notify=False,
+                         max_iters=1)
+    assert len(fired) == 1 and fired[0]["dry_run"] is False
+
+
+def test_drop_loop_degraded_prefs_forces_dry_run(monkeypatch):
+    # A half-read config forces dry-run even when --live is set (§1.4a refuse to
+    # book): degraded overrides the deploy-level --live. This is the safety net.
+    runner, fired = _loop_env(monkeypatch,
+                              prefs=Prefs(degraded=("weekly_cap",), live=False))
+    _pin_next_drop(monkeypatch, runner, "2026-08-04")
+    runner.run_drop_loop(target_key="paddington", dry_run=False, notify=False,
+                         max_iters=1)
+    assert len(fired) == 1 and fired[0]["dry_run"] is True
