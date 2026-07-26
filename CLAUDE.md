@@ -48,18 +48,33 @@ PYTHONPATH=src .venv/bin/python -m tennisbot catch-loop --max-cycles 1 --no-noti
 Targets/surfaces/activities are configured in `config/targets.yaml`.
 `--time HH:MM` overrides ranked prefs (books that time, any court).
 
-## Cancellation catcher — CORE BUILT, dry-run, NOT deployed ⏳ (2026-07-25)
+## Cancellation catcher — DEPLOYED on the homelab, dry-run ✅ (2026-07-26, v0.4.0)
 `tennisbot catch-loop` (`catcher.py`) polls D0–D+7 every 30 min for freed courts
 matching the shared `prefs.json` and books them via the EXISTING single-date
 engine (re-search seam, §8.2 — no click-through). Ships **dry-run**; goes live
-only if `prefs.live`. Structure: pure logic (week-grid parser, matcher, weekly
-cap, lapsed-hold policy §4.4, `plan_cycle`) is unit-tested offline; the browser
-lives behind an injectable `_PlaywrightScanner` (tests pass a FAKE — no Chromium).
-Inherits watchd's blackouts (§8.4). State (per-slot re-book memory + heartbeat +
-cap-notice) in `$CATCHER_STATE_DIR/catcher-state.json` (bracket.json idiom).
-⚠️ **NOT wired to the Telegram transport yet** (deferred): the `prefs`/getUpdates
-poll thread and the `paid_this_week`/`next_scan` injection into `/status` are the
-next increment. No deploy/compose done.
+only if `prefs.live`. Pure logic (week-grid parser, matcher, weekly cap,
+lapsed-hold §4.4, `plan_cycle`) is unit-tested offline; the browser lives behind
+an injectable `_PlaywrightScanner`. Inherits the drop's blackouts (§8.4). State
+(per-slot memory + heartbeat + cap-notice) in `$CATCHER_STATE_DIR/catcher-state.json`.
+- **Live-verified 2026-07-26:** the week-grid parser works in production
+  (`week_grid.parsed available=38 cells=91`) and it dry-run-booked an evening slot
+  end-to-end.
+- **Config is unified & LIVE.** The Telegram transport runs as its own
+  container (`tennisbot-prefs`, the `prefs` getUpdates long-poll), the SOLE writer
+  of `prefs.json` on a shared `tennisbot-config` volume; the catcher AND the drop
+  (`run_drop_loop`, §8.6) read it. So one Telegram config governs both jobs.
+  (Chosen the separate-container transport over in-process for a lower-risk
+  unattended deploy; in-process — which would also let `/status` report
+  `paid_this_week`/`next_scan` instead of "unknown" — is a future refinement.)
+- ⚠️ **Two deploy gotchas** (see homelab decisions 2026-07-26): `catch-loop`
+  takes NO `--centre` (centre comes from prefs); and a fresh state volume mounts
+  root-owned but the image runs as `pwuser` (1001), so `/data/catch` needed a
+  one-time chown. **FOLLOW-UP:** add `/data/catch` to `deploy/docker/Dockerfile`
+  (mkdir + chown pwuser) so a fresh volume needs no chown.
+- ⚠️ **watchd RETIRED** — its roles are absorbed by the catcher; only one EA
+  poller now. Full drop-time-regression collaboration (§8.3, the `never_opened`
+  cross-check) is not yet built; the drop's own `never_opened` diagnosis remains
+  the primary signal.
 
 ## Architecture (code map)
 - `providers/everyoneactive.py` — login, robust Connect entry, search, results
@@ -77,9 +92,9 @@ next increment. No deploy/compose done.
   `TENNISBOT_CONFIG_DIR`, tolerant read → defaults, atomic temp-file+`os.replace`
   write, validation. `telegram_commands.py` — inbound command surface
   (API_SPEC §2), pure `handle_message()` + `CommandSession` seam.
-  ⚠️ **Both are built and tested but NOT yet wired to anything** — no CLI
-  command, no long-poll transport, and neither the catcher nor the sprinter
-  reads them yet (see NEXT_STEPS).
+  `telegram_poll.py` — the getUpdates long-poll transport (`prefs` subcommand,
+  runs as the `tennisbot-prefs` container). **LIVE (2026-07-26):** it writes
+  prefs.json; the catcher and the drop (`run_drop_loop`) both read it.
 
 ## Key facts & gotchas (learned the hard way)
 - **Connect entry is 3-tier** (most→least robust): reuse saved Connect session →
