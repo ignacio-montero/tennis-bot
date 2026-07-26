@@ -70,7 +70,8 @@ def test_settings_survive_a_restart(tmp_path):
     # does, so this is the acceptance criterion in miniature.
     saved = save_prefs(Prefs(centres=("westway",), days=("Tue", "Thu"),
                              earliest="18:00", latest="22:00",
-                             slot_length_hours=2, weekly_cap=1, live=True),
+                             slot_length_hours=2, weekly_cap=1,
+                             catcher_live=True, drop_live=True),
                        tmp_path)
     reloaded = load_prefs(tmp_path)
     assert reloaded == saved
@@ -80,9 +81,9 @@ def test_settings_survive_a_restart(tmp_path):
 def test_save_stamps_provenance(tmp_path):
     saved = save_prefs(Prefs.defaults(), tmp_path, updated_by="telegram")
     assert saved.updated_by == "telegram" and saved.updated_at
-    assert saved.version == 1
+    assert saved.version == 2
     on_disk = json.loads((tmp_path / "prefs.json").read_text())
-    assert on_disk["updated_by"] == "telegram" and on_disk["version"] == 1
+    assert on_disk["updated_by"] == "telegram" and on_disk["version"] == 2
 
 
 def test_write_is_atomic_and_leaves_no_temp_files(tmp_path):
@@ -170,5 +171,7 @@ def test_time_window_is_inclusive_start_exclusive_end():
 
 
 def test_summary_leads_with_the_mode():
-    assert Prefs(live=False).summary().startswith("DRY-RUN")
-    assert Prefs(live=True).summary().startswith("LIVE")
+    assert Prefs().summary().startswith("DRY-RUN")
+    assert Prefs(catcher_live=True, drop_live=True).summary().startswith("LIVE")
+    # A single armed switch is still "LIVE" overall (mode = either-armed).
+    assert Prefs(catcher_live=True).summary().startswith("LIVE")

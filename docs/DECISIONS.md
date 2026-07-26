@@ -200,3 +200,68 @@ rejected:
   `drop-outcomes.jsonl`. Also elevates the independent observer from
   "regression detector" to **ground truth whenever the sprinter fails**: watchd's
   00:07 poll was the only evidence distinguishing "our bug" from "drop moved".
+
+## Prefs schema v2 — per-day rules, two switches, split ceilings (2026-07-26)
+Code is shipped (`prefs.py`, `telegram_commands.py`, `catcher.py`, `runner.py`);
+contract in [API_SPEC.md §1.2a/§1.6/§2.3](API_SPEC.md), design in
+[ARCHITECTURE.md §8.2/§8.6/§8.8](ARCHITECTURE.md).
+
+- **Booking rules are an ORDERED priority list; add-order = priority.** v1's
+  single global window couldn't express "weeknights after 18:00 **and** Saturday
+  10:00–15:00". v2 makes `rules` an ordered tuple of `Rule(days, earliest,
+  latest)`; a slot is bookable iff **some** rule admits it, and the catcher books
+  the highest-priority match first (`rules[0]` wins). Ranking intent *by the
+  order you add rules* needs no separate priority field or UI — the list order IS
+  the ranking. The flat `days`/`earliest`/`latest` are **retained as a derived
+  mirror** of a single rule (kept in lock-step by `Prefs.__post_init__`) so every
+  v1-era reader and the single-window `/status` display keep working unchanged;
+  a v1 doc **migrates** on read (flat window → one rule), it never degrades.
+  *Rejected:* a separate integer `priority` per rule (redundant with list order,
+  more to validate); ripping out the flat readers (a bigger, riskier change than
+  mirroring). *Cost:* `/days`/`/window` are now a sole-rule shorthand that must
+  **reject** when ≥2 rules exist (a single flat window is meaningless against a
+  list), and reorder currently means clear + re-add (a REORDER command is on the
+  BACKLOG).
+- **Two independent live switches, with a conservative v1 migration.** The single
+  `live` flag became `catcher_live` + `drop_live`: two live bookers are two
+  separate consent decisions, and the owner may want one armed while the other
+  stays dry. `/catcher on` / `/drop on` each run their own CONFIRM handshake
+  (tagged with which switch it arms); `/live off` is a **panic path** that turns
+  both off with no speed bump (the safe direction never has friction); `/live on`
+  arms both. `Prefs.live` survives only as a read-only "is either armed"
+  convenience for display, never serialised. A v1 `live:true` migrates to
+  **`drop_live` only** — the drop was the sole v1 booker, so its consent carries
+  forward faithfully, but the catcher is a NEW booker and silently arming it
+  would run a second live booker the owner never consented to. Safe migration =
+  under-arm, not over-arm. *Rejected:* one flag for both (can't dry-run one
+  booker while the other is live); migrating `live:true` to both (arms an
+  unconsented booker).
+- **Positive court-ID confined to the PAID cap only (fail-open vs fail-closed).**
+  Identifying "is this Manage-Bookings row a court" has two failure modes: the
+  generous *negative rule* (any non-activity booking is a court) can OVER-count;
+  *positive court-ID* (row text contains a configured surface token, e.g.
+  `"Tennis - Synth"`) can UNDER-count on a token miss. These fail in opposite
+  directions, so each consumer is routed to the identification whose failure is
+  SAFE for it. **Only the paid weekly cap** uses positive-ID — a paid *swim* must
+  not eat the court budget (money-safety wants precision) — with a fallback to
+  the negative rule + a loud `court_token_divergence` log when a token is missing,
+  so even its failure becomes an over-count (skip a winnable court), never an
+  over-book. **Idempotency** (`held_court_date_keys`) and the **holds ceiling**
+  (`count_unpaid_holds`) deliberately keep the negative rule: their unsafe
+  direction is UNDER-counting (re-book a slot we already hold → a hold storm; or
+  a ceiling that never trips), and over-counting merely makes them skip/hold-off.
+  The general lesson: precision is not globally better — pick the identification
+  whose failure mode is harmless for that specific guard. *Rejected:* one shared
+  court-ID everywhere (whichever you pick is unsafe for half the callers).
+- **`max_holds` is a SEPARATE ceiling from the weekly cap.** `weekly_cap` bounds
+  money (PAID court bookings per Monday-reset week); `max_holds` bounds
+  concurrent UNPAID holds parked right now (default 5, `/holds`). They cap
+  different resources and can trip independently — you can be under your paid cap
+  yet already sitting on too many unpaid holds. The holds ceiling is a **global
+  stop** checked at the highest-priority bookable candidate (so that is the one
+  held off), whereas a capped week does not stop the walk (a later, un-capped
+  week must still be reachable — the D0–D+7 scan straddles Monday). Both count
+  from the authoritative Manage-Bookings view, not a drifting local tally; either
+  at 0 pauses booking. *Rejected:* folding holds into the weekly cap (conflates
+  spend-this-week with parked-now; a single number can't pause one without the
+  other).

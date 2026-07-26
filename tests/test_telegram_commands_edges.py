@@ -40,10 +40,15 @@ EVERY_COMMAND = [
 ]
 
 
-def send(text, prefs=None, chat_id=OWNER, now=NOW, pending=None, **kw):
+def send(text, prefs=None, chat_id=OWNER, now=NOW, pending=None, target="both",
+         **kw):
+    # `target` defaults to "both": every handshake here is `/live on` (= both),
+    # and the handler now FAILS CLOSED on an untargeted CONFIRM (W3), so the
+    # target must be threaded alongside `pending` exactly as the session does.
     return handle_message(text, chat_id, prefs or Prefs.defaults(),
                           owner_chat_id=OWNER, now=now,
                           pending_confirm_until=pending,
+                          pending_confirm_target=(target if pending else None),
                           valid_centres=CENTRES, **kw)
 
 
@@ -251,7 +256,7 @@ def test_confirm_with_nothing_armed_never_writes(tmp_path):
 def test_live_off_is_immediate_and_needs_no_confirmation(tmp_path):
     # Asymmetry by design (§2.3): the *safe* direction has no speed bump, so a
     # panicking owner can always stop real bookings in one message.
-    save_prefs(Prefs(live=True), tmp_path)
+    save_prefs(Prefs(catcher_live=True, drop_live=True), tmp_path)
     s = session(tmp_path)
     reply = s.handle("/live off", OWNER, now=NOW)
     assert "DRY-RUN" in reply

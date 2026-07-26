@@ -61,7 +61,7 @@ class FakeScanner:
         return list(self.bookings)
 
     def book(self, centre, date, time, prefs):
-        dry = not prefs.live
+        dry = not prefs.catcher_live
         self.booked.append((centre, date, time))
         self.book_dry_runs.append(dry)
         chosen = Slot(date=date, time=time, court="Court 1", available=True,
@@ -104,12 +104,40 @@ def test_live_prefs_do_flip_to_a_real_hold(tmp_path):
     (fake) scanner book live and the loop emit a 'HELD' message. This is the
     control that proves the dry-run assertions elsewhere actually mean
     something."""
-    save_prefs(Prefs(centres=("paddington",), live=True), tmp_path)
+    save_prefs(Prefs(centres=("paddington",), catcher_live=True), tmp_path)
     scanner = FakeScanner(_slots(("2026-07-25", "18:00", "available")))
     tg = CapturingNotifier()
     _run(scanner, tg, tmp_path)
     assert scanner.book_dry_runs == [False]
     assert any("HELD" in s for s in tg.sends)
+
+
+def test_hold_ceiling_blocks_the_book_and_notifies_once(tmp_path):
+    # Loop-level Q2a: with max_holds=1 and one unpaid court hold already open,
+    # a matched slot must NOT be booked; the owner is told once, per day.
+    save_prefs(Prefs(centres=("paddington",), max_holds=1, catcher_live=True),
+               tmp_path)
+    scanner = FakeScanner(
+        _slots(("2026-07-25", "18:00", "available")),
+        bookings=[{"text": "Tennis - Synth", "paid": False, "day": 22,
+                   "mon": "Jul"}])                       # 1 unpaid court == ceiling
+    tg = CapturingNotifier()
+    _run(scanner, tg, tmp_path)
+    assert scanner.booked == []                          # ceiling held it off
+    assert any("Hold ceiling" in s for s in tg.sends)
+
+
+def test_drop_live_alone_does_NOT_make_the_catcher_book_live(tmp_path):
+    # The two switches are INDEPENDENT (Q2b): arming only the DROP must leave the
+    # catcher in dry-run — the catcher gate reads `catcher_live`, not the
+    # combined `live`. A regression here would let one arm silently arm the other.
+    save_prefs(Prefs(centres=("paddington",), catcher_live=False,
+                     drop_live=True), tmp_path)
+    scanner = FakeScanner(_slots(("2026-07-25", "18:00", "available")))
+    tg = CapturingNotifier()
+    _run(scanner, tg, tmp_path)
+    assert scanner.book_dry_runs == [True]          # catcher stays dry-run
+    assert not any("HELD" in s for s in tg.sends)
 
 
 def test_degraded_prefs_force_dry_run_even_with_live_true(tmp_path):

@@ -610,19 +610,30 @@ def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
                 continue
 
             # Precedence: a SET prefs field wins; otherwise fall back to the CLI
-            # arg so no/default prefs behaves exactly as today.
-            eff_after = (prefs.earliest if prefs.earliest is not None
-                         else after_time)
+            # arg so no/default prefs behaves exactly as today. Per-day (§v2):
+            # pick the floor from the highest-priority rule matching this drop
+            # date, not a single global window — so `Tue 18:00- / Sat 10:00-`
+            # gives the drop the right earliest for whichever weekday D+7 is.
+            # `earliest_for_date` returns None (⇒ CLI fallback) when no rule
+            # sets a floor; "00:00" is a non-empty string so `or` is safe here.
+            eff_after = prefs.earliest_for_date(target_date) or after_time
+            # KNOWN LIMITATION: a rule's `latest` (upper ceiling) is NOT enforced
+            # by the drop — the single-date engine (run_drop/_run_court/
+            # choose_court_slots) has no max-time parameter, only `after_time`.
+            # Adding one is an engine change out of scope here; the catcher still
+            # enforces the ceiling. See the report / BACKLOG follow-up.
             # slot_length_hours: only force two-hours ON (==2). ==1 is the default
             # and indistinguishable from "unset", so forcing it OFF could override
             # the target's own config on a default read — backward-compat forbids.
             eff_two_hours = True if prefs.slot_length_hours == 2 else None
-            # Live gate = prefs.live OR --live (unified Telegram-live AND a
-            # deploy-level --live both work). `prefs.degraded` forces dry-run: a
-            # half-read config means we can't trust the owner's intent, so refuse
-            # to book live even if --live is set (§1.4a "refuse to book").
-            # NB: the parens are load-bearing — `and` binds tighter than `or`.
-            live = (prefs.live or (not dry_run)) and not prefs.degraded
+            # Live gate = prefs.drop_live OR --live (the drop's own Telegram
+            # switch AND a deploy-level --live both work). `prefs.degraded` forces
+            # dry-run: a half-read config means we can't trust the owner's intent,
+            # so refuse to book live even if --live is set (§1.4a "refuse to
+            # book"). NB: the parens are load-bearing — `and` binds tighter than
+            # `or`. Uses `drop_live` (not the combined `live`), so arming only the
+            # catcher never makes the drop book (§Q2b two independent switches).
+            live = (prefs.drop_live or (not dry_run)) and not prefs.degraded
 
             log.info("drop_loop.fire", drop_date=target_date, dry_run=not live,
                      mode=("LIVE" if live else "DRY-RUN"), after_time=eff_after,

@@ -261,7 +261,7 @@ def test_live_confirm_handshake_threads_through_the_transport(tmp_path):
     # must thread CommandSession's handshake state between them so the second
     # message flips `live` — proving the seam preserves stateful, multi-message
     # flows (not just one-shot commands).
-    save_prefs(Prefs(live=False), tmp_path)
+    save_prefs(Prefs(), tmp_path)
     session = CommandSession(OWNER, tmp_path, valid_centres=CENTRES)
     send = Recorder()
 

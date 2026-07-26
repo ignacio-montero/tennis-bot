@@ -88,7 +88,9 @@ def test_match_filters_by_day_time_and_state():
     assert got == [Candidate("paddington", "2026-07-26", "18:00")]
 
 
-def test_match_orders_by_centre_priority_then_date_then_time():
+def test_match_with_no_rules_orders_by_date_then_time_then_centre():
+    # With no rules configured all candidates share rule-priority 0, so the
+    # ordering falls through to date, then time, then centre as the tiebreak.
     prefs = _prefs(centres=("westway", "paddington"))
     slots = {
         "paddington": [WeekSlot("2026-07-25", "18:00", "available", "T")],
@@ -96,10 +98,41 @@ def test_match_orders_by_centre_priority_then_date_then_time():
                     WeekSlot("2026-07-26", "18:00", "available", "T")],
     }
     got = match_candidates(slots, prefs, _now("2026-07-20T09:00:00"))
-    # westway first (priority), earliest time first within it, then paddington.
+    # 25 Jul is the earliest date, so paddington's slot leads despite westway
+    # being the higher-priority centre; then westway 18:00 before 20:00.
+    assert got == [Candidate("paddington", "2026-07-25", "18:00"),
+                   Candidate("westway", "2026-07-26", "18:00"),
+                   Candidate("westway", "2026-07-26", "20:00")]
+
+
+def test_match_centre_is_only_a_tiebreak_when_date_and_time_are_equal():
+    prefs = _prefs(centres=("westway", "paddington"))
+    slots = {
+        "paddington": [WeekSlot("2026-07-26", "18:00", "available", "T")],
+        "westway": [WeekSlot("2026-07-26", "18:00", "available", "T")],
+    }
+    got = match_candidates(slots, prefs, _now("2026-07-20T09:00:00"))
+    # Same date+time ⇒ the higher-priority centre (westway) wins the tiebreak.
     assert got == [Candidate("westway", "2026-07-26", "18:00"),
-                   Candidate("westway", "2026-07-26", "20:00"),
-                   Candidate("paddington", "2026-07-25", "18:00")]
+                   Candidate("paddington", "2026-07-26", "18:00")]
+
+
+def test_match_rule_priority_is_primary_over_date_and_time():
+    # Rule order = the owner's Telegram-declared priority. A slot matching a
+    # higher-priority rule must be booked before one matching a lower rule, even
+    # if the lower-rule slot is sooner. Rule 0: Sun evenings; rule 1: Sat.
+    from tennisbot.prefs import Rule
+    prefs = _prefs(centres=("paddington",),
+                   rules=(Rule(days=("Sun",), earliest="18:00"),
+                          Rule(days=("Sat",))))
+    slots = {"paddington": [
+        WeekSlot("2026-07-25", "10:00", "available", "T"),   # Sat → rule 1
+        WeekSlot("2026-07-26", "18:00", "available", "T"),   # Sun eve → rule 0
+    ]}
+    got = match_candidates(slots, prefs, _now("2026-07-20T09:00:00"))
+    # Sun (rule 0) outranks the earlier Sat (rule 1).
+    assert got == [Candidate("paddington", "2026-07-26", "18:00"),
+                   Candidate("paddington", "2026-07-25", "10:00")]
 
 
 def test_match_skips_past_slots_today():

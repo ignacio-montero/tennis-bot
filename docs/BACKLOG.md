@@ -42,6 +42,19 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   shared by BOTH the catcher and the drop booker. Scoped in a dedicated PRD:
   [PRD-cancellation-catcher.md](PRD-cancellation-catcher.md) (draft 2026-07-23).
   EA week-grid feasibility validated by live probe same day.
+- 🔵 **Drop should enforce a rule's `latest` (upper time bound)** — the catcher
+  honours both ends of a rule's window, but the midnight drop honours only
+  `earliest` (the floor). The single-date engine (`run_drop` → `_run_court` →
+  `choose_court_slots`) has just an `after_time` param, no ceiling, so a rule
+  like `Tue 10:00-12:00` would let the drop book a 14:00 court. `/status` warns
+  when `drop_live` is set and any rule has a `latest`. Fix: add a `before_time`
+  (upper-bound) engine param mirroring `after_time`, then feed it from
+  `latest_for_date` in `run_drop_loop`. Engine change — out of scope of the v2
+  prefs change that surfaced it.
+- 🟡 **Rule REORDER command** — rule priority is list order, but there is no way
+  to re-rank in place: reordering today means `/rules clear` + re-adding in the
+  new order. A `/rule move <from> <to>` (or `/rule up/down N`) would let the
+  owner re-prioritise without losing rules.
 - 🟡 **Concurrency / racing** — fire attempts for ranked alternatives at the
   drop, first-win-cancels-rest (architecture already designed for this).
 - 🟡 **Court preferences** — prefer/avoid specific courts (we already capture the
@@ -63,6 +76,16 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   be a clean JSON API (unlike Gladstone). Deferred from MVP.
 
 ## 4. Reliability & politeness
+- 🔵 **Verify Manage-Bookings court text carries a surface token before
+  `/catcher on`** — the paid weekly cap identifies court hire POSITIVELY by a
+  configured surface token (`courts.surfaces[].match`, e.g. `"Tennis - Synth"`;
+  ARCHITECTURE §8.6). That precision rests on real Manage-Bookings rows actually
+  containing the token. If EA's booking-row text differs from the search-row
+  text the token was tuned to, every paid court silently fails the positive match
+  and the cap falls back to the negative rule (logged as `court_token_divergence`
+  — over-count, so safe, but the cap is then coarser than intended). This is the
+  **one live-verification gate** the positive-ID depends on: confirm a real paid
+  court's row text contains the token before arming the catcher live.
 - ✅ **Session persistence (storage_state)** — reuses login + Connect session
   (`.session/`); robust 3-tier Connect entry (reuse → MRMLogin → SSO).
 - ⚪ **SQLite state + audit log** — record attempts, holds, outcomes; idempotency

@@ -29,8 +29,8 @@ from typing import Iterable
 
 import structlog
 
-from .prefs import (LONDON, Prefs, PrefsError, known_centres, load_prefs,
-                    parse_days, parse_time, save_prefs, validate)
+from .prefs import (LONDON, Prefs, PrefsError, Rule, known_centres, load_prefs,
+                    parse_days, parse_time, rule_text, save_prefs, validate)
 
 log = structlog.get_logger()
 
@@ -55,12 +55,17 @@ HELP = (
     "🎾 <b>Tennis-Bot</b> — config commands\n"
     "/status — mode + active settings\n"
     "/centres paddington westway — where to look\n"
-    "/days Tue Thu · /days any — which weekdays\n"
+    "/days Tue Thu · /days any — weekdays (single-rule shorthand)\n"
     "/window 18:00-22:00 · /window 18:00- · /window any — time window\n"
+    "/rules — list booking rules (priority order)\n"
+    "/rule Tue Thu 18:00- · /rule Sat 10:00-15:00 · /rule Sun any — add a rule\n"
+    "/rule del 2 · /rules clear — remove rule(s)\n"
     "/length 1|2 — hours per booking\n"
-    "/cap 3 · /cap 0 — max paid bookings per week (0 pauses booking)\n"
-    "/live on — enable REAL bookings (asks you to confirm)\n"
-    "/live off — back to dry-run\n"
+    "/cap 3 · /cap 0 — max PAID bookings per week (0 pauses)\n"
+    "/holds 5 · /holds 0 — max concurrent UNPAID holds (0 pauses)\n"
+    "/catcher on|off — arm/disarm the cancellation catcher (on asks to confirm)\n"
+    "/drop on|off — arm/disarm the midnight drop (on asks to confirm)\n"
+    "/live off — panic: turn BOTH off now · /live on — arm both\n"
     "/help — this list"
 )
 
@@ -73,7 +78,15 @@ class CommandResult:
     prefs: Prefs | None = None            # new config to persist, else None
     reply: str | None = None              # text to send back, else silence
     pending_confirm_until: dt.datetime | None = None   # live-handshake deadline
+    # WHICH switch a pending CONFIRM will arm: "catcher" | "drop" | "both". There
+    # are now two arm-able switches, so a CONFIRM must know which it applies to.
+    pending_confirm_target: str | None = None
     ok: bool = True                       # False = rejected (for logging)
+
+
+# Commands that manage the live-confirm handshake themselves (so the generic
+# "inherit the pending state" propagation below must not clobber their result).
+HANDSHAKE_CMDS = ("/live", "/catcher", "/drop")
 
 
 def _strip_bot_suffix(cmd: str) -> str:
@@ -84,6 +97,7 @@ def _strip_bot_suffix(cmd: str) -> str:
 def handle_message(text: str, chat_id, prefs: Prefs, *, owner_chat_id,
                    now: dt.datetime | None = None,
                    pending_confirm_until: dt.datetime | None = None,
+                   pending_confirm_target: str | None = None,
                    valid_centres: Iterable[str] | None = None,
                    paid_this_week: int | None = None,
                    next_scan: str | None = None) -> CommandResult:
@@ -111,36 +125,53 @@ def handle_message(text: str, chat_id, prefs: Prefs, *, owner_chat_id,
     if not owner or not sender or sender != owner or owner == "None":
         log.info("telegram.cmd_ignored_foreign", chat_id=sender or "<missing>",
                  owner_configured=bool(owner) and owner != "None")
+        # Preserve the armed handshake state untouched: a stranger must neither
+        # complete NOR clear it (dropping the target here would wipe the owner's
+        # armed switch, and W3's fail-closed would then reject the owner's own
+        # CONFIRM). The stranger is simply invisible to the state machine.
         return CommandResult(pending_confirm_until=pending_confirm_until,
+                             pending_confirm_target=pending_confirm_target,
                              ok=False)
 
     raw = (text or "").strip()
     if not raw:
-        return CommandResult(pending_confirm_until=pending_confirm_until)
+        return CommandResult(pending_confirm_until=pending_confirm_until,
+                             pending_confirm_target=pending_confirm_target)
 
     # -- live-confirm handshake (§2.3) -------------------------------------
     # Checked BEFORE command dispatch: while a confirmation is outstanding the
-    # very next message either confirms it or cancels it.
+    # very next message either confirms it (for the armed target) or cancels it.
     prefix = ""
     if pending_confirm_until is not None:
         if now > pending_confirm_until:
-            pending_confirm_until = None
+            pending_confirm_until = pending_confirm_target = None
             if raw.upper() == CONFIRM_WORD:
                 return CommandResult(
                     reply="⌛ That confirmation expired — still <b>DRY-RUN</b>. "
-                          "Send /live on again if you meant it.\n"
+                          "Re-send the on command if you meant it.\n"
                           + prefs.summary())
             prefix = "⌛ Live confirmation expired (still DRY-RUN).\n"
         elif raw.upper() == CONFIRM_WORD:
-            new = replace(prefs, live=True)
+            if pending_confirm_target is None:
+                # W3 — FAIL CLOSED: a live handshake with no target must arm
+                # NOTHING (never default to "both"). Unreachable in production
+                # (the session always sets until+target together), but the safe
+                # default when we can't tell WHICH switch is cancel + re-prompt.
+                return CommandResult(
+                    reply="🚫 Couldn't tell which switch to confirm — nothing "
+                          "changed. Re-send /catcher on, /drop on, or /live "
+                          "on.\n" + prefs.summary(),
+                    pending_confirm_until=None, pending_confirm_target=None,
+                    ok=False)
+            new, what = _apply_live_target(prefs, pending_confirm_target)
             return CommandResult(
                 prefs=new,
-                reply="🔴 <b>LIVE</b> — real holds will be created from the "
-                      "next cycle.\n" + new.summary(),
-                pending_confirm_until=None)
+                reply=f"🔴 <b>{what}</b> — real holds will be created from the "
+                      f"next cycle.\n" + new.summary(),
+                pending_confirm_until=None, pending_confirm_target=None)
         else:
             # Anything else cancels the arming, then is processed normally.
-            pending_confirm_until = None
+            pending_confirm_until = pending_confirm_target = None
             prefix = "🚫 Live confirmation cancelled (still DRY-RUN).\n"
 
     if not raw.startswith("/"):
@@ -165,15 +196,26 @@ def handle_message(text: str, chat_id, prefs: Prefs, *, owner_chat_id,
         return CommandResult(
             reply=prefix + f"⚠️ {_esc(str(e))}\nUnchanged: "
                            f"{_esc(prefs.summary())}",
-            pending_confirm_until=pending_confirm_until, ok=False)
+            pending_confirm_until=pending_confirm_until,
+            pending_confirm_target=pending_confirm_target, ok=False)
 
     if prefix and result.reply:
         result = replace(result, reply=prefix + result.reply)
     # A command that didn't set its own handshake state inherits the (possibly
-    # just-cancelled) one.
-    if result.pending_confirm_until is None and cmd != "/live":
-        result = replace(result, pending_confirm_until=pending_confirm_until)
+    # just-cancelled) one. Handshake commands manage their own state.
+    if result.pending_confirm_until is None and cmd not in HANDSHAKE_CMDS:
+        result = replace(result, pending_confirm_until=pending_confirm_until,
+                         pending_confirm_target=pending_confirm_target)
     return result
+
+
+def _apply_live_target(prefs: Prefs, target: str) -> tuple[Prefs, str]:
+    """Apply a confirmed arming to the right switch(es)."""
+    if target == "catcher":
+        return replace(prefs, catcher_live=True), "catcher LIVE"
+    if target == "drop":
+        return replace(prefs, drop_live=True), "drop LIVE"
+    return replace(prefs, catcher_live=True, drop_live=True), "LIVE (both)"
 
 
 def _dispatch(cmd: str, args: list, prefs: Prefs, *, now: dt.datetime,
@@ -189,6 +231,13 @@ def _dispatch(cmd: str, args: list, prefs: Prefs, *, now: dt.datetime,
 
     if cmd == "/live":
         return _live(args, prefs, now)
+    if cmd == "/catcher":
+        return _switch("catcher", "catcher_live", args, prefs, now)
+    if cmd == "/drop":
+        return _switch("drop", "drop_live", args, prefs, now)
+
+    if cmd == "/rules" and not (args and args[0].lower() == "clear"):
+        return CommandResult(reply=_rules_text(prefs))   # read-only list
 
     # -- the config setters (§2.2) -----------------------------------------
     if cmd == "/centres":
@@ -199,17 +248,37 @@ def _dispatch(cmd: str, args: list, prefs: Prefs, *, now: dt.datetime,
         candidate = replace(prefs, centres=centres)
         label = "Centres: " + ", ".join(centres)
 
+    elif cmd == "/rules":                                # only "/rules clear" here
+        candidate = _with_rules(prefs, ())
+        label = "Rules cleared — any day, any time."
+
+    elif cmd == "/rule":
+        candidate, label = _rule_command(args, prefs)
+
     elif cmd == "/days":
         if not args:
             raise PrefsError("Usage: /days Tue Thu  (or /days any)")
-        days = parse_days(args)
-        candidate = replace(prefs, days=days)
-        label = "Days: " + (", ".join(days) if days else "any day")
+        candidate = _edit_sole_rule(prefs, "/days", days=parse_days(args))
+        label = "Days: " + (", ".join(candidate.days) if candidate.days
+                            else "any day")
 
     elif cmd == "/window":
         earliest, latest = _parse_window(args)
-        candidate = replace(prefs, earliest=earliest, latest=latest)
+        candidate = _edit_sole_rule(prefs, "/window",
+                                    earliest=earliest, latest=latest)
         label = "Window: " + candidate.window_text()
+
+    elif cmd == "/holds":
+        # `.isascii() and .isdigit()`, matching the ASCII intent (isdecimal admits
+        # non-ASCII digits an IME can emit; a superscript passes isdigit but int()
+        # rejects it). Consistent with /cap's guard.
+        tok = args[0].lstrip("+") if args else ""
+        if len(args) != 1 or not (tok.isascii() and tok.isdigit()):
+            raise PrefsError("Usage: /holds 5  (whole number ≥ 0; 0 pauses "
+                             "booking).")
+        candidate = replace(prefs, max_holds=int(args[0]))
+        label = (f"Max concurrent holds: {candidate.max_holds}"
+                 + (" — booking paused" if candidate.max_holds == 0 else ""))
 
     elif cmd == "/length":
         if len(args) != 1 or args[0] not in ("1", "2"):
@@ -252,28 +321,124 @@ def _dispatch(cmd: str, args: list, prefs: Prefs, *, now: dt.datetime,
                          reply=f"✅ {label}\n{candidate.summary()}")
 
 
-def _live(args: list, prefs: Prefs, now: dt.datetime) -> CommandResult:
+def _arm_deadline(now: dt.datetime) -> dt.datetime:
+    """The confirm deadline, computed in UTC then rendered back to London.
+
+    Adding a timedelta to a zone-aware London datetime does CIVIL arithmetic —
+    on the autumn fall-back night 01:59 + 2min spans the repeated hour, giving a
+    62-MINUTE window on the one guard in front of real bookings. UTC avoids it."""
+    return (now.astimezone(dt.timezone.utc) + CONFIRM_TIMEOUT).astimezone(LONDON)
+
+
+_ARM_MIN = int(CONFIRM_TIMEOUT.total_seconds() // 60)
+
+
+def _switch(name: str, flag: str, args: list, prefs: Prefs,
+            now: dt.datetime) -> CommandResult:
+    """One arm-able live switch (`/catcher`, `/drop`). `off` is immediate; `on`
+    arms the two-step CONFIRM handshake, tagging the pending state with `name` so
+    the CONFIRM lands on the right flag."""
     arg = (args[0].lower() if args else "")
     if arg in ("off", "false", "0", "no"):
-        new = replace(prefs, live=False)
+        new = replace(prefs, **{flag: False})
         return CommandResult(prefs=new,
-                             reply="🟢 <b>DRY-RUN</b> — no real bookings.\n"
+                             reply=f"🟢 <b>{name} DRY-RUN</b> — no real {name} "
+                                   f"bookings.\n" + new.summary())
+    if arg in ("on", "true", "1", "yes"):
+        if getattr(prefs, flag):
+            return CommandResult(reply=f"{name} already <b>LIVE</b>.\n"
+                                       + prefs.summary())
+        return CommandResult(
+            reply=f"⚠️ Enable REAL {name} bookings? Reply "
+                  f"<code>{CONFIRM_WORD}</code> within {_ARM_MIN} min.",
+            pending_confirm_until=_arm_deadline(now),
+            pending_confirm_target=name)
+    raise PrefsError(f"Usage: /{name} on  ·  /{name} off")
+
+
+def _live(args: list, prefs: Prefs, now: dt.datetime) -> CommandResult:
+    """`/live off` is the panic switch — turns BOTH bookers off immediately, no
+    handshake (the safe direction never has a speed bump). `/live on` arms BOTH
+    via the same CONFIRM handshake, tagged "both". Kept alongside the per-switch
+    `/catcher`/`/drop` for the owner's muscle-memory and a one-shot arm/disarm."""
+    arg = (args[0].lower() if args else "")
+    if arg in ("off", "false", "0", "no"):
+        new = replace(prefs, catcher_live=False, drop_live=False)
+        return CommandResult(prefs=new,
+                             reply="🟢 <b>DRY-RUN</b> — both bookers off.\n"
                                    + new.summary())
     if arg in ("on", "true", "1", "yes"):
-        if prefs.live:
-            return CommandResult(reply="Already <b>LIVE</b>.\n"
+        if prefs.catcher_live and prefs.drop_live:
+            return CommandResult(reply="Already <b>LIVE</b> (both).\n"
                                        + prefs.summary())
-        # Two-step: arm, don't apply. The state travels back to the caller.
         return CommandResult(
-            reply=f"⚠️ Enable REAL bookings? Reply <code>{CONFIRM_WORD}</code> "
-                  f"within {int(CONFIRM_TIMEOUT.total_seconds() // 60)} min.",
-            # Deadline computed in UTC, not wall clock. Adding a timedelta to a
-            # zone-aware London datetime does CIVIL arithmetic — on the autumn
-            # fall-back night 01:59 + 2min spans the repeated hour, giving a
-            # 62-MINUTE window on the one guard in front of real bookings.
-            pending_confirm_until=(now.astimezone(dt.timezone.utc)
-                                   + CONFIRM_TIMEOUT).astimezone(LONDON))
-    raise PrefsError("Usage: /live on  ·  /live off")
+            reply=f"⚠️ Enable REAL bookings on BOTH catcher and drop? Reply "
+                  f"<code>{CONFIRM_WORD}</code> within {_ARM_MIN} min.",
+            pending_confirm_until=_arm_deadline(now),
+            pending_confirm_target="both")
+    raise PrefsError("Usage: /live on (arm both)  ·  /live off (panic: both off)")
+
+
+def _with_rules(prefs: Prefs, rules) -> Prefs:
+    """Set `rules` and clear the flat mirror in one step. Necessary because
+    `dataclasses.replace` copies the OLD flat `days`/`earliest`/`latest` forward,
+    and `Prefs.__post_init__` would then re-synthesise a rule from those stale
+    fields when the new rule list is empty — so `replace(prefs, rules=())` alone
+    fails to clear a window. Passing the flat fields empty lets post_init derive
+    them afresh from the new rules (or leave them empty for `()`)."""
+    return replace(prefs, rules=tuple(rules), days=(), earliest=None,
+                   latest=None)
+
+
+def _edit_sole_rule(prefs: Prefs, cmd: str, **changes) -> Prefs:
+    """`/days`/`/window` shorthand: create or edit the SOLE rule. With 0 or 1
+    rules this preserves today's simple single-window behaviour exactly; with ≥2
+    rules it REFUSES (rather than silently destroying a multi-rule config) and
+    points the owner at `/rule`/`/rules`."""
+    if len(prefs.rules) >= 2:
+        raise PrefsError(f"You have {len(prefs.rules)} rules, so {cmd} is "
+                         f"ambiguous. Edit them with /rule / /rule del / "
+                         f"/rules clear, or see /rules.")
+    sole = prefs.rules[0] if prefs.rules else Rule()
+    new_rule = replace(sole, **changes)
+    return _with_rules(prefs, () if new_rule.is_permissive() else (new_rule,))
+
+
+def _rule_command(args: list, prefs: Prefs) -> tuple[Prefs, str]:
+    """`/rule <days...> <window>` (append), or `/rule del <n>` (remove)."""
+    if not args:
+        raise PrefsError("Usage: /rule Tue Thu 18:00-  ·  /rule Sat 10:00-15:00 "
+                         "·  /rule del 2")
+    if args[0].lower() == "del":
+        # ASCII digits only (see /holds): isdecimal admits non-ASCII digits.
+        if len(args) != 2 or not (args[1].isascii() and args[1].isdigit()):
+            raise PrefsError("Usage: /rule del 2  (the number shown by /rules).")
+        n = int(args[1])
+        if n < 1 or n > len(prefs.rules):
+            raise PrefsError(f"No rule #{n} — you have {len(prefs.rules)} "
+                             f"rule(s). See /rules.")
+        new_rules = prefs.rules[:n - 1] + prefs.rules[n:]
+        return _with_rules(prefs, new_rules), f"Removed rule #{n}."
+    # Append: the LAST token is the window, everything before it is the day list.
+    *day_toks, window_tok = args
+    earliest, latest = _parse_window([window_tok])
+    days = parse_days(day_toks) if day_toks else ()
+    rule = Rule(days=days, earliest=earliest, latest=latest)
+    candidate = _with_rules(prefs, prefs.rules + (rule,))
+    return candidate, f"Added rule #{len(candidate.rules)}: {rule_text(rule)}"
+
+
+def _rules_text(prefs: Prefs) -> str:
+    """The `/rules` read-back: the ordered rule list + a legend, or a note that
+    booking is unrestricted when there are none."""
+    if not prefs.rules:
+        return ("No booking rules — any day, any time.\n"
+                "Add one with e.g. /rule Tue Thu 18:00-\n" + prefs.summary())
+    lines = ["📋 <b>Rules</b> (1 = highest priority):"]
+    for i, r in enumerate(prefs.rules, 1):
+        lines.append(f"{i}. {_esc(rule_text(r))}")
+    lines.append(prefs.summary())
+    return "\n".join(lines)
 
 
 def _parse_window(args: list) -> tuple:
@@ -302,14 +467,33 @@ def _status_text(prefs: Prefs, paid_this_week: int | None,
         cap = f"{paid_this_week}/{prefs.weekly_cap} paid this week"
     lines = [
         f"{icon} <b>{prefs.mode}</b>",
+        (f"Bookers: catcher {'LIVE' if prefs.catcher_live else 'DRY'} · "
+         f"drop {'LIVE' if prefs.drop_live else 'DRY'}"),
         f"Centres: {', '.join(prefs.centres)}",
-        f"Days: {', '.join(prefs.days) if prefs.days else 'any day'}",
-        f"Window: {prefs.window_text()}",
+    ]
+    # 0–1 rules read as the classic Days/Window lines (backward-compatible); ≥2
+    # rules render as a numbered priority list.
+    if len(prefs.rules) >= 2:
+        lines.append("Rules (priority order):")
+        for i, r in enumerate(prefs.rules, 1):
+            lines.append(f"  {i}. {_esc(rule_text(r))}")
+    else:
+        lines.append(f"Days: {', '.join(prefs.days) if prefs.days else 'any day'}")
+        lines.append(f"Window: {prefs.window_text()}")
+    lines += [
         f"Slot length: {prefs.slot_length_hours}h",
         f"Weekly cap: {cap}",
+        f"Holds ceiling: {prefs.max_holds}",
         f"Next scan: {next_scan or 'unknown'}",
         f"Updated: {prefs.updated_at or 'never'} ({prefs.updated_by})",
     ]
+    # W2: the midnight drop engine has no upper-time bound (only a floor), so a
+    # rule's `latest` ceiling is enforced by the catcher but NOT the drop. Warn
+    # only when it actually matters — the drop is armed AND some rule sets a
+    # ceiling. (A proper `before_time` engine param is on the BACKLOG.)
+    if prefs.drop_live and any(r.latest is not None for r in prefs.rules):
+        lines.append("⚠️ Drop enforces only the window FLOOR (earliest), not the "
+                     "ceiling (latest) — the catcher enforces both.")
     return "\n".join(lines)
 
 
@@ -334,6 +518,7 @@ class CommandSession:
         self.valid_centres = (tuple(valid_centres)
                               if valid_centres is not None else None)
         self._pending_confirm_until: dt.datetime | None = None
+        self._pending_confirm_target: str | None = None
 
     def handle(self, text: str, chat_id, now: dt.datetime | None = None,
                paid_this_week: int | None = None,
@@ -344,9 +529,11 @@ class CommandSession:
             text, chat_id, prefs,
             owner_chat_id=self.owner_chat_id, now=now,
             pending_confirm_until=self._pending_confirm_until,
+            pending_confirm_target=self._pending_confirm_target,
             valid_centres=self.valid_centres,
             paid_this_week=paid_this_week, next_scan=next_scan)
         self._pending_confirm_until = result.pending_confirm_until
+        self._pending_confirm_target = result.pending_confirm_target
         if result.prefs is not None:
             saved = save_prefs(result.prefs, self.config_dir,
                                updated_by="telegram")

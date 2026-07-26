@@ -216,7 +216,7 @@ def test_read_never_raises_when_the_file_is_unreadable(tmp_path):
     Prefs.defaults(),
     Prefs(centres=("paddington", "westway"), days=("Mon", "Sun"),
           earliest="00:00", latest="23:59", slot_length_hours=2,
-          weekly_cap=0, live=True),
+          weekly_cap=0, catcher_live=True, drop_live=True),
     Prefs(days=(), earliest=None, latest=None, weekly_cap=0),
 ])
 def test_disk_round_trip_is_lossless(tmp_path, prefs):
@@ -447,11 +447,13 @@ def test_parse_days_rejects_unknown_tokens(tokens):
 
 
 def test_validate_rejects_a_non_bool_live():
-    # Covers prefs.py:271-272. Defence in depth: from_dict already fails safe,
+    # Covers the live-flag guard. Defence in depth: from_dict already fails safe,
     # but a caller constructing Prefs directly must not be able to persist a
-    # non-bool into the document the sprinter trusts.
+    # non-bool into the document the sprinter trusts. Both split flags checked.
     with pytest.raises(PrefsError):
-        validate(replace(Prefs(), live="yes"), ["paddington"])
+        validate(replace(Prefs(), catcher_live="yes"), ["paddington"])
+    with pytest.raises(PrefsError):
+        validate(replace(Prefs(), drop_live="yes"), ["paddington"])
 
 
 def test_validate_skips_the_membership_check_only_for_an_explicit_none():
@@ -545,8 +547,8 @@ def test_window_text_and_summary_render_every_shape():
     assert Prefs().window_text() == "any time"
     assert "18:00" in Prefs(earliest="18:00").window_text()
     assert "22:00" in Prefs(latest="22:00").window_text()
-    for p in (Prefs(), Prefs(live=True, days=("Tue",), earliest="18:00",
-                             latest="22:00", weekly_cap=0,
+    for p in (Prefs(), Prefs(catcher_live=True, drop_live=True, days=("Tue",),
+                             earliest="18:00", latest="22:00", weekly_cap=0,
                              centres=("paddington", "westway"))):
         s = p.summary()
         assert "None" not in s and s.strip()
@@ -581,7 +583,7 @@ def test_missing_version_defaults_silently_not_degraded(tmp_path):
     # (Regression: a missing version briefly degraded every partial doc, so a
     # hand-edited config with live:true was silently stuck in dry-run.)
     p = load_prefs(write(tmp_path, '{"live": true, "earliest": "18:00"}'))
-    assert p.degraded == () and p.live is True and p.version == 1
+    assert p.degraded == () and p.live is True and p.version == 2
 
 
 def test_newer_schema_version_degrades_forcing_dry_run(tmp_path):

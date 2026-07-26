@@ -41,7 +41,7 @@ log = structlog.get_logger()
 
 LONDON = ZoneInfo("Europe/London")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PREFS_FILENAME = "prefs.json"
 
 # Env-injected location, exactly like DROP_STATE_DIR / WATCHD_STATE_DIR. Read at
@@ -61,10 +61,65 @@ for _i, _d in enumerate(DAYS):
 _HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 
+def _norm_hhmm(hhmm: str) -> str | None:
+    """Zero-pad "9:00"→"09:00" and validate; None if unparseable.
+
+    Comparison of HH:MM windows is lexicographic, which is only correct on
+    ZERO-PADDED strings ("9:00" > "18:00" as text). Every window predicate runs
+    its input through here so the padding rule lives in exactly one place and
+    unparseable input FAILS CLOSED (returns None ⇒ callers refuse to book)."""
+    t = (hhmm or "").strip()
+    if len(t) == 4 and t[1] == ":":            # "9:00" -> "09:00"
+        t = "0" + t
+    return t if _HHMM.match(t) else None
+
+
+def _window_admits(earliest: str | None, latest: str | None, t: str) -> bool:
+    """`earliest` inclusive, `latest` exclusive. `t` must be pre-normalised."""
+    if earliest is not None and t < earliest:
+        return False
+    if latest is not None and t >= latest:
+        return False
+    return True
+
+
+def _window_text(earliest: str | None, latest: str | None) -> str:
+    if earliest is None and latest is None:
+        return "any time"
+    return f"{earliest or 'any'}–{latest or 'any'}"
+
+
 class PrefsError(ValueError):
     """An invalid preference update. The message is shown to the owner verbatim
     in Telegram, so it must say what was wrong AND what a good value looks
     like."""
+
+
+@dataclass(frozen=True)
+class Rule:
+    """One per-day booking rule (schema v2). A candidate (date, time) satisfies a
+    rule when the rule's `days` include that weekday AND its window admits the
+    time. Empty `days` = any day; `None` bounds = unbounded on that side."""
+
+    days: tuple[str, ...] = ()      # () = any day; canonical Mon..Sun tokens
+    earliest: str | None = None     # "HH:MM" inclusive floor
+    latest: str | None = None       # "HH:MM" exclusive ceiling
+
+    def covers_day(self, day: str) -> bool:
+        return (not self.days) or day in self.days
+
+    def admits_time(self, t: str) -> bool:
+        """`t` must already be zero-padded (callers pass `_norm_hhmm` output)."""
+        return _window_admits(self.earliest, self.latest, t)
+
+    def is_permissive(self) -> bool:
+        return not self.days and self.earliest is None and self.latest is None
+
+
+# The permissive "any day / any time" rule, returned by `matching_rule` when the
+# owner has configured no rules at all (so callers get a non-None Rule to read
+# earliest/latest off, and None unambiguously means "no rule admits this slot").
+_ANY_RULE = Rule()
 
 
 # --------------------------------------------------------------------------
@@ -75,25 +130,76 @@ class PrefsError(ValueError):
 class Prefs:
     """The active preferences (API_SPEC §1.2). Frozen + tuples: an update is a
     new object (`dataclasses.replace`), never a mutation of the live one, so a
-    rejected update cannot half-apply."""
+    rejected update cannot half-apply.
+
+    **Schema v2 — the rule list is canonical.** `rules` is an ordered tuple of
+    `Rule`s, index 0 = highest priority; empty `rules` = fully permissive (any
+    day, any time), which is the v1 default. The flat `days`/`earliest`/`latest`
+    fields are KEPT but DERIVED (see `__post_init__`): when there is exactly one
+    rule they mirror it, otherwise they are empty. Keeping them (rather than
+    ripping every reader out) is the lower-risk migration — `/status`, the
+    summary line, and any hand-reader keep working unchanged for the common
+    single-window config, and `to_dict` still emits them for a tolerant reader.
+    """
 
     centres: tuple[str, ...] = ("paddington",)
-    days: tuple[str, ...] = ()        # () = any day
-    earliest: str | None = None       # "HH:MM" inclusive floor (None = none)
-    latest: str | None = None         # "HH:MM" exclusive ceiling (None = none)
+    days: tuple[str, ...] = ()        # DERIVED mirror of a single rule (§v2)
+    earliest: str | None = None       # DERIVED "HH:MM" inclusive floor
+    latest: str | None = None         # DERIVED "HH:MM" exclusive ceiling
+    rules: tuple[Rule, ...] = ()      # ordered, index 0 = highest priority
     slot_length_hours: int = 1
-    weekly_cap: int = 3
-    live: bool = False
+    weekly_cap: int = 3               # PAID court bookings per Mon-reset week
+    max_holds: int = 5               # concurrent UNPAID holds ceiling (0 = pause)
+    # Two independent live switches (schema v2). A v1 `live: true` migrates to
+    # DROP-ONLY (the only booker that existed under v1); the catcher stays off
+    # until an explicit `/catcher on`. `live` (below) is a read-only convenience
+    # = "is anything live".
+    catcher_live: bool = False
+    drop_live: bool = False
     updated_at: str | None = None
     updated_by: str = "default"
     version: int = SCHEMA_VERSION
     # Fields that failed to parse on read. NON-EMPTY ⇒ this document is only
-    # partially understood, so `live` is forced False (API_SPEC §1.4): every
-    # constraint field's default is the PERMISSIVE value (no days filter = any
-    # day, no earliest = any time, cap back to 3), so falling back to defaults
-    # on a *configured* box silently WIDENS what the bot may do. Refusing to
-    # book is the only safe direction when we can't read the owner's intent.
+    # partially understood, so BOTH live flags are forced False (API_SPEC §1.4):
+    # every constraint field's default is the PERMISSIVE value (no rules = any
+    # day/time, cap back to 3), so falling back to defaults on a *configured*
+    # box silently WIDENS what the bot may do. Refusing to book is the only safe
+    # direction when we can't read the owner's intent.
     degraded: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        """Keep the flat `days`/`earliest`/`latest` mirror in lock-step with the
+        canonical `rules`, in BOTH directions, so old readers and new code never
+        disagree:
+
+        - rules set  → derive flat from the sole rule (or clear them for a
+          multi-rule config, where a single flat window is meaningless);
+        - rules empty but flat set (a v1-style `Prefs(days=..., earliest=...)`
+          construction) → synthesise the single rule those flat fields imply.
+
+        Runs on every construction AND every `dataclasses.replace`, so a setter
+        that only touches `rules` (see `/days`/`/window`) still yields a
+        consistent object without the callers having to remember to sync."""
+        if self.rules:
+            if len(self.rules) == 1:
+                r = self.rules[0]
+                object.__setattr__(self, "days", r.days)
+                object.__setattr__(self, "earliest", r.earliest)
+                object.__setattr__(self, "latest", r.latest)
+            else:
+                object.__setattr__(self, "days", ())
+                object.__setattr__(self, "earliest", None)
+                object.__setattr__(self, "latest", None)
+        elif self.days or self.earliest is not None or self.latest is not None:
+            object.__setattr__(self, "rules", (Rule(days=self.days,
+                                                    earliest=self.earliest,
+                                                    latest=self.latest),))
+
+    @property
+    def live(self) -> bool:
+        """Read-only convenience: is EITHER booker armed? The canonical state is
+        the two flags; this keeps summary/mode and legacy readers terse."""
+        return self.catcher_live or self.drop_live
 
     # -- (de)serialisation --------------------------------------------------
 
@@ -157,18 +263,60 @@ class Prefs:
             _bad("weekly_cap", cap)
             cap = d.weekly_cap
 
-        live = raw.get("live", d.live)
-        if not isinstance(live, bool):
-            _bad("live", live)
-            live = d.live          # unreadable `live` ⇒ dry-run: fail SAFE
+        holds = raw.get("max_holds", d.max_holds)
+        if not isinstance(holds, int) or isinstance(holds, bool) or holds < 0:
+            _bad("max_holds", holds)
+            holds = d.max_holds
 
-        # Cross-field invariant: an inverted window can't come from the command
-        # path (_parse_window always replaces BOTH ends) but a hand-edit can,
-        # and it would make allows_time() reject everything, silently.
+        # Two live flags (schema v2). Prefer the canonical pair; fall back to a
+        # v1 `live` (migrate → DROP-ONLY, see W1 below). A non-bool of either
+        # fails SAFE (dry-run).
+        def _bool(key):
+            v = raw.get(key, False)
+            if isinstance(v, bool):
+                return v
+            _bad(key, v)
+            return False
+
+        if "catcher_live" in raw or "drop_live" in raw:
+            catcher_live = _bool("catcher_live")
+            drop_live = _bool("drop_live")
+        elif "live" in raw:
+            v = raw.get("live")
+            if isinstance(v, bool):
+                # v1 migration (W1): the DROP is the only booker that existed
+                # under v1, so a v1 `live:true` arms the drop only. The catcher is
+                # a NEW booker — arming it silently would run a second live booker
+                # the owner never consented to, so it stays OFF until an explicit
+                # /catcher on. (The live box is `live:false`, so this is defence.)
+                drop_live = v
+                catcher_live = False
+            else:
+                _bad("live", v)
+                catcher_live = drop_live = False
+        else:
+            catcher_live = drop_live = False
+
+        # Cross-field invariant: an inverted flat window can't come from the
+        # command path (_parse_window always replaces BOTH ends) but a hand-edit
+        # can, and it would make the window admit nothing, silently.
         if (times["earliest"] is not None and times["latest"] is not None
                 and times["earliest"] >= times["latest"]):
             _bad("window", f"{times['earliest']}-{times['latest']}")
             times["earliest"] = times["latest"] = None
+
+        # Rules (schema v2). If the doc carries an explicit `rules` key, parse it
+        # (tolerant — a bad rule is dropped + degrades the doc, like any field).
+        # Otherwise MIGRATE the flat v1 window into a single rule iff any of the
+        # three flat fields is non-default; an all-default v1 doc → () (fully
+        # permissive), identical to today.
+        if "rules" in raw:
+            rules = _parse_rules(raw.get("rules"), _bad)
+        elif days or times["earliest"] is not None or times["latest"] is not None:
+            rules = (Rule(days=days, earliest=times["earliest"],
+                          latest=times["latest"]),)
+        else:
+            rules = ()
 
         # Version handling. A MISSING version is not an error — it defaults
         # silently like every other absent field (a partial/hand-edited doc must
@@ -187,12 +335,12 @@ class Prefs:
 
         degraded = tuple(dict.fromkeys(bad_fields))       # de-dup, keep order
         if degraded:
-            live = False               # refuse to book on a half-read document
+            catcher_live = drop_live = False   # refuse to book on a half-read doc
 
         return cls(
-            centres=centres, days=days,
-            earliest=times["earliest"], latest=times["latest"],
-            slot_length_hours=length, weekly_cap=cap, live=live,
+            centres=centres, rules=rules,
+            slot_length_hours=length, weekly_cap=cap, max_holds=holds,
+            catcher_live=catcher_live, drop_live=drop_live,
             updated_at=raw.get("updated_at") or None,
             updated_by=raw.get("updated_by") or d.updated_by,
             version=version, degraded=degraded,
@@ -202,12 +350,17 @@ class Prefs:
         return {
             "version": self.version,
             "centres": list(self.centres),
+            # Flat mirror kept for a tolerant/legacy reader; DERIVED from rules.
             "days": list(self.days),
             "earliest": self.earliest,
             "latest": self.latest,
+            "rules": [{"days": list(r.days), "earliest": r.earliest,
+                       "latest": r.latest} for r in self.rules],
             "slot_length_hours": self.slot_length_hours,
             "weekly_cap": self.weekly_cap,
-            "live": self.live,
+            "max_holds": self.max_holds,
+            "catcher_live": self.catcher_live,
+            "drop_live": self.drop_live,
             "updated_at": self.updated_at,
             "updated_by": self.updated_by,
         }
@@ -224,44 +377,90 @@ class Prefs:
             return True
         return _DAY_LOOKUP.get(day.strip().lower()) in self.days
 
+    def matching_rule(self, iso_date: str, hhmm: str) -> Rule | None:
+        """Highest-priority rule whose days include `iso_date`'s weekday AND
+        whose window admits `hhmm`. Empty `rules` ⇒ the permissive `_ANY_RULE`
+        (so a non-None return always means "some rule admits this slot"). An
+        unparseable time FAILS CLOSED (None), same rule as `allows_time`.
+
+        The time is normalised/validated BEFORE the empty-rules shortcut so a
+        default (permissive) config also fails closed on garbage — otherwise the
+        shortcut would return `_ANY_RULE` for an unparseable time, admitting it."""
+        t = _norm_hhmm(hhmm)
+        if t is None:
+            log.warning("prefs.matching_rule_malformed", value=hhmm)
+            return None
+        if not self.rules:
+            return _ANY_RULE
+        weekday = DAYS[dt.date.fromisoformat(iso_date).weekday()]
+        for r in self.rules:
+            if r.covers_day(weekday) and r.admits_time(t):
+                return r
+        return None
+
     def allows_date(self, iso_date: str) -> bool:
-        d = dt.date.fromisoformat(iso_date)
-        return self.allows_day(DAYS[d.weekday()])
+        """Does ANY rule's `days` include this date? Empty rules ⇒ True. The
+        drop uses this to decide whether to bother with tonight's D+7 at all."""
+        if not self.rules:
+            return True
+        weekday = DAYS[dt.date.fromisoformat(iso_date).weekday()]
+        return any(r.covers_day(weekday) for r in self.rules)
+
+    def allows_date_time(self, iso_date: str, hhmm: str) -> bool:
+        """A (date, time) is bookable iff some rule admits it (day AND window)."""
+        return self.matching_rule(iso_date, hhmm) is not None
+
+    def _rule_for_date(self, iso_date: str) -> Rule | None:
+        """Highest-priority rule matching `iso_date` by DAY only (window ignored),
+        for the drop to pick its window."""
+        if not self.rules:
+            return None
+        weekday = DAYS[dt.date.fromisoformat(iso_date).weekday()]
+        for r in self.rules:
+            if r.covers_day(weekday):
+                return r
+        return None
+
+    def earliest_for_date(self, iso_date: str) -> str | None:
+        r = self._rule_for_date(iso_date)
+        return r.earliest if r is not None else None
+
+    def latest_for_date(self, iso_date: str) -> str | None:
+        r = self._rule_for_date(iso_date)
+        return r.latest if r is not None else None
 
     def allows_time(self, hhmm: str) -> bool:
-        """`earliest` inclusive, `latest` exclusive.
+        """Day-agnostic window check against the flat (sole-rule) window. Kept
+        for backward compatibility; the catcher uses `allows_date_time`.
 
-        Comparison is lexicographic, which is only correct for ZERO-PADDED
-        HH:MM — "9:00" > "18:00" as strings, so an unpadded time would sail
-        through an evening-only filter and book an 08:00 court. That was an
-        unenforced precondition on the caller; since the catcher needs a NEW
-        week-grid parser (ARCHITECTURE §8.2) that may well emit "9:00", we
-        normalise here and FAIL CLOSED on anything we can't parse.
-        """
-        t = (hhmm or "").strip()
-        if len(t) == 4 and t[1] == ":":            # "9:00" -> "09:00"
-            t = "0" + t
-        if not _HHMM.match(t):
+        Comparison is lexicographic, correct only for ZERO-PADDED HH:MM, so we
+        normalise here and FAIL CLOSED on anything we can't parse."""
+        t = _norm_hhmm(hhmm)
+        if t is None:
             log.warning("prefs.allows_time_malformed", value=hhmm)
             return False                            # unparseable ⇒ don't book
-        if self.earliest is not None and t < self.earliest:
-            return False
-        if self.latest is not None and t >= self.latest:
-            return False
-        return True
+        return _window_admits(self.earliest, self.latest, t)
 
     def window_text(self) -> str:
-        if self.earliest is None and self.latest is None:
-            return "any time"
-        return f"{self.earliest or 'any'}–{self.latest or 'any'}"
+        return _window_text(self.earliest, self.latest)
+
+    def _rules_segment(self) -> str:
+        """The days/window chunk of the summary. For 0–1 rules it reads exactly
+        as v1 ("any day · any time" / "Tue,Thu · 18:00–any"); for ≥2 rules it
+        renders the ordered list compactly."""
+        if len(self.rules) >= 2:
+            return "; ".join(rule_text(r) for r in self.rules)
+        days_part = ",".join(self.days) if self.days else "any day"
+        return f"{days_part} · {self.window_text()}"
 
     def summary(self) -> str:
         """One-line "whole picture" line appended to every config change reply
         (API_SPEC §2.2), leading with the mode (§8.8: mode always surfaced)."""
         base = (f"{self.mode} · {'+'.join(self.centres)} · "
-                f"{','.join(self.days) if self.days else 'any day'} · "
-                f"{self.window_text()} · {self.slot_length_hours}h · "
-                f"cap {self.weekly_cap}")
+                f"{self._rules_segment()} · {self.slot_length_hours}h · "
+                f"cap {self.weekly_cap} · holds {self.max_holds} · "
+                f"catcher {'LIVE' if self.catcher_live else 'DRY'} · "
+                f"drop {'LIVE' if self.drop_live else 'DRY'}")
         if self.degraded:
             # Must be loud: a degraded document has already forced DRY-RUN, and
             # the owner needs to know booking is paused and why (§8.9).
@@ -273,6 +472,59 @@ def _canonical_days(days: Iterable[str]) -> tuple[str, ...]:
     """Normalise to canonical Mon..Sun order, de-duplicated."""
     wanted = {_DAY_LOOKUP[str(x).strip().lower()] for x in days}
     return tuple(d for d in DAYS if d in wanted)
+
+
+def rule_text(r: Rule) -> str:
+    """Human-readable "Tue,Thu 18:00–any" for a single rule."""
+    days_part = ",".join(r.days) if r.days else "any day"
+    return f"{days_part} {_window_text(r.earliest, r.latest)}"
+
+
+def _parse_one_rule(raw) -> Rule | None:
+    """Tolerant parse of a single rule dict → `Rule`, or None if unusable (bad
+    day token, malformed/unpadded time, or inverted window)."""
+    if not isinstance(raw, dict):
+        return None
+    raw_days = raw.get("days", ())
+    if raw_days in (None, (), []):
+        days: tuple[str, ...] = ()
+    elif (isinstance(raw_days, (list, tuple)) and all(
+            isinstance(x, str) and x.strip().lower() in _DAY_LOOKUP
+            for x in raw_days)):
+        days = _canonical_days(raw_days)
+    else:
+        return None
+
+    def _time(v):
+        if v is None:
+            return True, None
+        if isinstance(v, str) and _HHMM.match(v):
+            return True, v
+        return False, None
+
+    ok_e, earliest = _time(raw.get("earliest"))
+    ok_l, latest = _time(raw.get("latest"))
+    if not ok_e or not ok_l:
+        return None
+    if earliest is not None and latest is not None and earliest >= latest:
+        return None                                   # inverted window
+    return Rule(days=days, earliest=earliest, latest=latest)
+
+
+def _parse_rules(raw_rules, _bad) -> tuple[Rule, ...]:
+    """Parse the `rules` list tolerantly: each bad rule is dropped and degrades
+    the document (fail-safe), but one bad rule never discards the good ones."""
+    if not isinstance(raw_rules, (list, tuple)):
+        _bad("rules", raw_rules)
+        return ()
+    out: list[Rule] = []
+    for i, r in enumerate(raw_rules):
+        parsed = _parse_one_rule(r)
+        if parsed is None:
+            _bad(f"rules[{i}]", r)
+            continue
+        out.append(parsed)
+    return tuple(out)
 
 
 # --------------------------------------------------------------------------
@@ -331,8 +583,27 @@ def validate(prefs: Prefs, valid_centres: Iterable[str] | None = None) -> None:
             or prefs.weekly_cap < 0):
         raise PrefsError("Weekly cap must be a whole number ≥ 0 "
                          "(0 pauses booking).")
-    if not isinstance(prefs.live, bool):
-        raise PrefsError("live must be true or false.")
+    if (not isinstance(prefs.max_holds, int) or isinstance(prefs.max_holds, bool)
+            or prefs.max_holds < 0):
+        raise PrefsError("Max holds must be a whole number ≥ 0 "
+                         "(0 pauses booking).")
+    for flag in ("catcher_live", "drop_live"):
+        if not isinstance(getattr(prefs, flag), bool):
+            raise PrefsError(f"{flag} must be true or false.")
+    # Each rule must have valid days and a non-inverted window (belt-and-braces:
+    # from_dict drops bad rules and /rule validates before saving, but a direct
+    # construction must not be able to persist a rule the readers can't honour).
+    for i, r in enumerate(prefs.rules, 1):
+        for d in r.days:
+            if d not in DAYS:
+                raise PrefsError(f"Rule #{i} has an invalid day: {d}.")
+        for bound in (r.earliest, r.latest):
+            if bound is not None:
+                parse_time(bound, "rule window")
+        if (r.earliest is not None and r.latest is not None
+                and r.earliest >= r.latest):
+            raise PrefsError(f"Rule #{i} window start must be before end — got "
+                             f"{r.earliest}-{r.latest}.")
 
 
 def known_centres() -> tuple[str, ...]:

@@ -159,34 +159,52 @@ def slot_key(centre: str, date: str, time: str) -> str:
     return f"{centre}|{date}|{time}"
 
 
+def _rule_priority(prefs, date: str, time: str) -> int | None:
+    """Index of the highest-priority rule that admits (date, time), or None if
+    no rule does. Empty `rules` ⇒ 0 (the single permissive slot). This is the
+    PRIMARY sort key: the owner ranks intent via Telegram (rule order), so the
+    catcher books in that order (ARCHITECTURE §8.2 / the rule-priority intent)."""
+    if not prefs.rules:
+        return 0 if prefs.allows_date_time(date, time) else None
+    r = prefs.matching_rule(date, time)
+    if r is None:
+        return None
+    try:
+        return prefs.rules.index(r)
+    except ValueError:                   # _ANY_RULE sentinel (shouldn't happen here)
+        return 0
+
+
 def match_candidates(slots_by_centre: dict[str, list[WeekSlot]],
                      prefs, now: dt.datetime) -> list[Candidate]:
-    """The exact `allows_day`/`allows_time` predicate over the week grid, after
-    EA's coarse server-side cut. Returns bookable (free) candidates ordered by
-    centre priority, then earliest date, then earliest time — so the loop books
-    the soonest wanted slot first.
+    """The exact per-day rule predicate over the week grid, after EA's coarse
+    server-side cut. Returns bookable (free) candidates ordered by **rule
+    priority** (index 0 = highest), then earliest date, then earliest time, with
+    centre priority as a final tiebreak — so the loop books the highest-priority
+    wanted slot first.
 
     Only `state == "available"` cells are candidates: a `my_booking` cell is
     already held/paid, so excluding it here is the grid-level idempotency check
     (§8.2 — the grid surfaces existing holds directly)."""
     centre_order = list(prefs.centres)
-    prio = {c: i for i, c in enumerate(centre_order)}
+    centre_prio = {c: i for i, c in enumerate(centre_order)}
     today = now.date().isoformat()
     now_hhmm = now.strftime("%H:%M")
-    out: list[Candidate] = []
+    ranked: list[tuple[int, str, str, int, Candidate]] = []
     for centre in centre_order:
         for ws in slots_by_centre.get(centre, []):
             if ws.state != "available":
                 continue
-            if not prefs.allows_date(ws.date):
-                continue
-            if not prefs.allows_time(ws.time):
+            rp = _rule_priority(prefs, ws.date, ws.time)
+            if rp is None:               # no rule admits this (day AND window)
                 continue
             if ws.date == today and ws.time <= now_hhmm:
                 continue                 # already in the past today
-            out.append(Candidate(centre, ws.date, ws.time))
-    out.sort(key=lambda c: (prio.get(c.centre, 999), c.date, c.time))
-    return out
+            ranked.append((rp, ws.date, ws.time,
+                           centre_prio.get(centre, 999),
+                           Candidate(centre, ws.date, ws.time)))
+    ranked.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
+    return [t[4] for t in ranked]
 
 
 # ==========================================================================
@@ -200,21 +218,38 @@ def week_dates_for(d: dt.date) -> list[dt.date]:
     return [monday + dt.timedelta(days=i) for i in range(7)]
 
 
+def _is_activity(text: str, activity_matches) -> bool:
+    """Is this Manage-Bookings row a coaching-activity commitment (Wed/Sun) —
+    which lives in a SEPARATE budget and is never a court? Same `match in text`
+    idiom `has_booking` uses."""
+    return any(m and m in text for m in activity_matches)
+
+
+# Court identification differs BY PURPOSE, because the safe fail-direction does
+# (C1). Idempotency (`held_court_date_keys`) and the holds ceiling
+# (`count_unpaid_holds`) are safe when they OVER-count — a spuriously-counted
+# booking only makes the bot SKIP a date / hold off, never double-book — so they
+# use the generous NEGATIVE rule (any non-activity booking is a "court"). Only
+# the PAID weekly cap wants precision (don't let a paid swim eat the court
+# budget, Q2c), so it alone uses positive court-ID.
+
 def held_court_date_keys(bookings, activity_matches) -> set:
     """(day, month-abbr) keys that ALREADY have a court booking — held OR paid —
-    per Manage Bookings. This is the AUTHORITATIVE idempotency source, used
-    instead of trusting the week grid's `my_booking` cell (whose exact markup
-    the recon spike could not confirm — if EA renders a self-held slot as
-    `Available`, a grid-only guard would re-book it every cycle: a hold storm).
+    per Manage Bookings. The AUTHORITATIVE idempotency source, used instead of
+    trusting the week grid's `my_booking` cell (whose exact markup the recon
+    spike could not confirm — if EA renders a self-held slot as `Available`, a
+    grid-only guard would re-book it every cycle: a hold storm).
 
     Per-date because `my_bookings` carries no time (one court per day is the
-    intent). Non-activity is treated as a court: on a tennis-only account that's
-    exact, and the failure direction is SAFE — a stray non-court booking only
-    makes us SKIP a date (under-book), never double-book."""
+    intent). **Fail-SAFE by OVER-counting:** any non-activity booking is treated
+    as a court, because the failure direction here is to SKIP a date (never
+    double-book). Positive court-ID is deliberately NOT used — a surface-token
+    miss would UNDER-count and re-book a slot we already hold (a hold storm),
+    the unsafe direction."""
     keys = set()
     for b in bookings:
         text = b.get("text", "") or ""
-        if any(m and m in text for m in activity_matches):
+        if _is_activity(text, activity_matches):
             continue                     # an activity commitment, not a court
         day, mon = b.get("day"), b.get("mon")
         if day is not None and mon:
@@ -222,32 +257,56 @@ def held_court_date_keys(bookings, activity_matches) -> set:
     return keys
 
 
-def count_paid_court_bookings(bookings, week_dates, activity_matches) -> int:
-    """Paid COURT bookings whose play date falls in `week_dates`.
+def count_paid_court_bookings(bookings, week_dates, activity_matches,
+                              court_matches=()) -> int:
+    """Paid COURT bookings whose play date falls in `week_dates` (§4.3).
 
     `bookings` is `EveryoneActiveProvider.my_bookings` output (dicts with
-    `paid`/`day`/`mon`/`text`). Activity bookings (Wed/Sun commitments) are
-    excluded — separate budget (§4.3).
+    `paid`/`day`/`mon`/`text`). Here PRECISION is the goal (Q2c): a paid swim/gym
+    must NOT eat the weekly court budget, so court hire is identified POSITIVELY
+    by a configured surface token. Coaching activities are always excluded.
 
-    Two known, accepted simplifications (safe on a tennis-only account; revisit
-    if that changes):
-    - **"court" = any paid non-activity booking.** A paid swim/gym booking would
-      count toward the court cap. Failure direction is SAFE (over-counts ⇒ a
-      false "cap reached" ⇒ we skip a winnable court, never over-book).
-    - **Year-blind:** matches (day, month-abbr), relying on Manage Bookings
-      showing only upcoming bookings (all (day,mon) unique within ≤8 days). If
-      it ever surfaced a booking from the same (day,mon) a year prior, this
-      would over-count. Confirm the "upcoming only" precondition on the box."""
+    Fallback: when the court-token set is empty/unreadable we can't positively
+    ID a court, so we use the negative rule (paid non-activity) — which
+    OVER-counts (a false "cap reached" ⇒ skip a winnable court, never over-book),
+    the safe direction. A positive < negative divergence is logged loudly, since
+    on the box it flags a surface-token drift (a real court whose text lost its
+    token) — the one case where positive-ID could under-count the cap."""
     wanted = {(d.day, _MON[d.month - 1]) for d in week_dates}
+    in_week = [b for b in bookings
+               if b.get("paid")
+               and (b.get("day"), b.get("mon")) in wanted
+               and not _is_activity(b.get("text", "") or "", activity_matches)]
+    negative = len(in_week)
+    if not court_matches:
+        return negative                  # safe fallback: over-count
+    positive = sum(
+        1 for b in in_week
+        if any(m and m in (b.get("text", "") or "") for m in court_matches))
+    if positive < negative:
+        log.warning("catcher.court_token_divergence",
+                    positive=positive, negative=negative,
+                    detail="a paid non-activity booking lacked a known court "
+                           "surface token — surface-token drift on the box, or a "
+                           "genuine non-court paid booking (swim/gym)")
+    return positive
+
+
+def count_unpaid_holds(bookings, activity_matches) -> int:
+    """Current UNPAID court holds across the whole Manage-Bookings view (Q2a).
+
+    The concurrent-holds ceiling (`max_holds`) caps how many unpaid holds the
+    catcher may have outstanding at once, SEPARATE from the paid weekly cap.
+    **Fail-SAFE by OVER-counting:** any unpaid non-activity booking counts,
+    because over-counting only makes the ceiling trip SOONER (hold off), never
+    over-book. Positive court-ID is deliberately NOT used — a token miss would
+    UNDER-count and yield a ceiling that never trips (the unsafe direction)."""
     n = 0
     for b in bookings:
-        if not b.get("paid"):
+        if b.get("paid"):
             continue
-        if (b.get("day"), b.get("mon")) not in wanted:
+        if _is_activity(b.get("text", "") or "", activity_matches):
             continue
-        text = b.get("text", "") or ""
-        if any(m and m in text for m in activity_matches):
-            continue                     # a Wed/Sun activity — not in this budget
         n += 1
     return n
 
@@ -326,24 +385,33 @@ def record_hold(entry: dict | None, now: dt.datetime, phase: str) -> dict:
 @dataclass(frozen=True)
 class CyclePlan:
     to_book: Candidate | None      # the slot to (would-)book this cycle, or None
-    candidate: Candidate | None    # the matched bookable slot (set even if capped)
+    candidate: Candidate | None    # the matched bookable slot (set even if blocked)
     phase: str                     # lapsed-hold phase for `to_book`
-    reason: str                    # "book" | "cap_reached" | "no_bookable"
+    reason: str                    # "book" | "cap_reached" | "hold_ceiling_reached"
+                                   #  | "no_bookable"
     paid: int = 0                  # paid count for the candidate's week
+    holds: int = 0                 # concurrent unpaid holds at decision time
 
 
 def plan_cycle(slots_by_centre, prefs, memory, bookings, activity_matches,
-               now: dt.datetime) -> CyclePlan:
+               now: dt.datetime, court_matches=()) -> CyclePlan:
     """One cycle's decision, from grid + prefs + memory + bookings + clock.
 
     Walks candidates in priority order and books the first one that is (a) not
-    already held/paid on that date, (b) permitted by the lapsed-hold policy, and
-    (c) in a week under its paid cap. A capped candidate does NOT stop the walk —
-    a LATER candidate in a different, un-capped week must still be reachable (the
-    D0–D+7 scan straddles Monday, so this week being full must not black out all
-    of next week). `cap_reached` is reported only if the cap was the sole reason
-    nothing was booked."""
+    already held/paid on that date, (b) permitted by the lapsed-hold policy,
+    (c) below the concurrent-UNPAID-holds ceiling (`max_holds`), and (d) in a
+    week under its paid cap. A capped candidate does NOT stop the walk — a LATER
+    candidate in a different, un-capped week must still be reachable (the D0–D+7
+    scan straddles Monday). The holds ceiling, by contrast, is a global stop: it
+    is checked at the FIRST genuinely-bookable candidate, so the top-priority
+    slot is the one held off (candidates are already in priority order).
+    `cap_reached`/`hold_ceiling_reached` are reported only when the block was the
+    sole reason nothing was booked.
+
+    `court_matches` is used ONLY by the PAID cap (positive court-ID, Q2c);
+    idempotency and the holds ceiling use the fail-SAFE negative rule (C1)."""
     held = held_court_date_keys(bookings, activity_matches)
+    holds = count_unpaid_holds(bookings, activity_matches)
     capped_example: Candidate | None = None
     capped_paid = 0
     for c in match_candidates(slots_by_centre, prefs, now):
@@ -353,16 +421,23 @@ def plan_cycle(slots_by_centre, prefs, memory, bookings, activity_matches,
         dec = should_rebook(memory.get(slot_key(c.centre, c.date, c.time)), now)
         if not dec.should_book:
             continue                     # released for the day — try the next
+        # Concurrent-holds ceiling (Q2a): a global stop, checked before the cap
+        # so the highest-priority bookable slot is the one we hold off on.
+        if holds >= prefs.max_holds:
+            paid = count_paid_court_bookings(bookings, week_dates_for(cdate),
+                                             activity_matches, court_matches)
+            return CyclePlan(None, c, "", "hold_ceiling_reached", paid, holds)
         paid = count_paid_court_bookings(bookings, week_dates_for(cdate),
-                                         activity_matches)
+                                         activity_matches, court_matches)
         if paid >= prefs.weekly_cap:
             if capped_example is None:   # remember the first, for the notice
                 capped_example, capped_paid = c, paid
             continue                     # a later week may be un-capped
-        return CyclePlan(c, c, dec.phase, dec.reason, paid)
+        return CyclePlan(c, c, dec.phase, dec.reason, paid, holds)
     if capped_example is not None:
-        return CyclePlan(None, capped_example, "", "cap_reached", capped_paid)
-    return CyclePlan(None, None, "", "no_bookable", 0)
+        return CyclePlan(None, capped_example, "", "cap_reached", capped_paid,
+                         holds)
+    return CyclePlan(None, None, "", "no_bookable", 0, holds)
 
 
 # ==========================================================================
@@ -507,7 +582,7 @@ class _PlaywrightScanner:
         # The catcher notifies from the RunResult instead (same pattern as
         # runner.run_drop).
         return _run_court(self._page, self._ctx, prov, target2, date,
-                          dry_run=not prefs.live, want_time=time,
+                          dry_run=not prefs.catcher_live, want_time=time,
                           tg=_NullTelegram())
 
     def teardown(self):
@@ -549,22 +624,44 @@ def _activity_matches() -> tuple[str, ...]:
         return ()
 
 
+def _court_matches() -> tuple[str, ...]:
+    """Every configured court-surface row-name, for POSITIVELY identifying court
+    hire in Manage Bookings for the PAID weekly cap only (Q2c — see
+    `count_paid_court_bookings`). Best-effort: an unreadable or surface-less
+    config yields (), which triggers that counter's safe negative fallback
+    (over-count, not over-book)."""
+    try:
+        from .config import load_targets
+        out: list[str] = []
+        for t in load_targets().values():
+            if t.courts is not None:
+                out.extend(s.match for s in t.courts.surfaces.values())
+        return tuple(out)
+    except Exception as e:
+        log.warning("catcher.court_matches_unreadable", error=str(e))
+        return ()
+
+
 # ==========================================================================
 # 8. Notifications
 # ==========================================================================
 
-def _maybe_heartbeat(state, now, prefs, bookings, activity_matches, tg) -> None:
+def _maybe_heartbeat(state, now, prefs, bookings, activity_matches, tg,
+                     court_matches=()) -> None:
     """One 'alive' ping per day, once we're past 09:00 (§8.9). Leads with the
-    mode + config summary + this week's paid count, so silence never means
-    'dead' and the persisted LIVE/DRY-RUN flag is always visible (§8.8)."""
+    mode + config summary + this week's paid count + open holds, so silence
+    never means 'dead' and the persisted LIVE/DRY-RUN flags are always visible
+    (§8.8)."""
     today = now.date().isoformat()
     if state.get("last_heartbeat") == today or now.time() < _hm(HEARTBEAT_AT):
         return
     state["last_heartbeat"] = today
     paid = count_paid_court_bookings(bookings, week_dates_for(now.date()),
-                                     activity_matches)
+                                     activity_matches, court_matches)
+    holds = count_unpaid_holds(bookings, activity_matches)
     tg.send(f"💓 catcher alive {today}.\n{prefs.summary()}\n"
-            f"Paid this week: {paid}/{prefs.weekly_cap}.")
+            f"Paid this week: {paid}/{prefs.weekly_cap}. "
+            f"Holds: {holds}/{prefs.max_holds}.")
 
 
 def _notify_book(tg, c: Candidate, result, prefs) -> None:
@@ -589,15 +686,17 @@ def _notify_book(tg, c: Candidate, result, prefs) -> None:
 # 9. Per-cycle orchestration (thin; the pure decision is plan_cycle)
 # ==========================================================================
 
-def _run_catcher_cycle(scanner, prefs, state, now, tg, activity_matches) -> CyclePlan:
+def _run_catcher_cycle(scanner, prefs, state, now, tg, activity_matches,
+                       court_matches=()) -> CyclePlan:
     bookings = scanner.get_bookings()
     slots_by_centre = scanner.scan(prefs)
-    _maybe_heartbeat(state, now, prefs, bookings, activity_matches, tg)
+    _maybe_heartbeat(state, now, prefs, bookings, activity_matches, tg,
+                     court_matches)
 
     state.setdefault("slots", {})
     prune_expired_slots(state, now.date().isoformat())   # keep memory lean
     plan = plan_cycle(slots_by_centre, prefs, state["slots"], bookings,
-                      activity_matches, now)
+                      activity_matches, now, court_matches)
 
     if plan.reason == "cap_reached" and plan.candidate is not None:
         wk = iso_week(dt.date.fromisoformat(plan.candidate.date))
@@ -607,6 +706,16 @@ def _run_catcher_cycle(scanner, prefs, state, now, tg, activity_matches) -> Cycl
                     f"({plan.paid}/{prefs.weekly_cap} paid) — holding off "
                     f"{plan.candidate.centre} {plan.candidate.date} "
                     f"{plan.candidate.time} and later this week.")
+        return plan
+
+    if plan.reason == "hold_ceiling_reached" and plan.candidate is not None:
+        today = now.date().isoformat()
+        if state.get("holds_notified") != today:   # notify once per day (Q2a)
+            state["holds_notified"] = today
+            tg.send(f"✋ Hold ceiling reached "
+                    f"({plan.holds}/{prefs.max_holds} unpaid holds) — holding "
+                    f"off {plan.candidate.centre} {plan.candidate.date} "
+                    f"{plan.candidate.time} until you pay or a hold lapses.")
         return plan
 
     if plan.to_book is None:
@@ -649,7 +758,7 @@ def run_catcher_loop(*, interval_min: float = DEFAULT_INTERVAL_MIN,
     body wrapped so one bad cycle logs, notifies, and continues rather than
     killing the loop (PRD §7). Skips (and yields the EA session during) blackouts
     inherited from watchd (§8.4). Reads prefs fresh every cycle, so a phone
-    change lands next cycle; books only when `prefs.live` (dry-run otherwise).
+    change lands next cycle; books only when `prefs.catcher_live` (else dry-run).
 
     Injection seams for tests: `scanner` (a fake replaces `_PlaywrightScanner`),
     `notifier`, and `now_fn`/`sleep_fn` — so the whole loop runs offline."""
@@ -668,6 +777,7 @@ def run_catcher_loop(*, interval_min: float = DEFAULT_INTERVAL_MIN,
 
     owns_scanner = scanner is None
     activity_matches = _activity_matches()
+    court_matches = _court_matches()
     state = load_state(state_dir_override)
 
     log.info("catcher.up", interval_min=interval_min, notify=notify,
@@ -698,7 +808,7 @@ def run_catcher_loop(*, interval_min: float = DEFAULT_INTERVAL_MIN,
             if scanner is None:
                 scanner = _PlaywrightScanner(headless=headless)
             _run_catcher_cycle(scanner, prefs, state, now, notifier,
-                               activity_matches)
+                               activity_matches, court_matches)
             save_state(state, state_dir_override)
         except Exception as e:            # one bad cycle must never kill the loop
             log.error("catcher.cycle_failed", err=str(e))

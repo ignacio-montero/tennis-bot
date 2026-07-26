@@ -34,8 +34,8 @@ class RecordingScanner:
     def book(self, centre, date, time, prefs):
         self.booked.append((centre, date, time))
         # Mirror the REAL scanner's gate exactly (catcher.py: dry_run=not live).
-        self.last_dry_run = not prefs.live
-        return RunResult(ok=True, dry_run=not prefs.live, message="ok",
+        self.last_dry_run = not prefs.catcher_live
+        return RunResult(ok=True, dry_run=not prefs.catcher_live, message="ok",
                          chosen=Slot(date=date, time=time, court="C1",
                                      available=True, selector="#x"),
                          screenshot_path=None)
@@ -58,7 +58,10 @@ def test_a_slot_already_held_on_that_date_is_never_rebooked(tmp_path):
                tmp_path)
     scanner = RecordingScanner(
         _slots(("2026-07-23", "18:00", "available")),
-        bookings=[{"text": "Tennis", "paid": False, "day": 23, "mon": "Jul"}])
+        # Positive court-ID (Q2c): the row text must carry a real surface token
+        # ("Tennis - Synth") for Manage Bookings to be read as a held COURT.
+        bookings=[{"text": "Tennis - Synth", "paid": False, "day": 23,
+                   "mon": "Jul"}])
     run_catcher_loop(max_cycles=1, notify=False, scanner=scanner,
                      notifier=type("N", (), {"send": lambda *_: None,
                                              "send_photo": lambda *_a, **_k: None})(),

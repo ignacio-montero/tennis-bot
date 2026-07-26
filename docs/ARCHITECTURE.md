@@ -528,11 +528,19 @@ The design rests on two probed facts, not assumptions:
   Available/Not-Available). So a full-window scan of one centre is ~1 search +
   ≤2 grid opens per cycle — *fewer page loads than watchd does today*.
 
-**Two-stage filter** (the key pattern): push the coarse cut — `days` +
-time-bucket — into EA's own form (Stage 1, server-side, keeps the scan cheap),
-then apply the exact `earliest`/`latest` predicate over the returned grid
-(Stage 2, client-side). Standard "push down what the API supports, filter the
-rest locally".
+**Two-stage filter** (the key pattern): push the coarse cut into EA's own form
+(Stage 1, server-side, keeps the scan cheap), then apply the exact predicate over
+the returned grid (Stage 2, client-side). Standard "push down what the API
+supports, filter the rest locally".
+
+**Stage 2 is per-day rule matching, ordered by priority (schema v2).** The prefs
+are an ordered `rules` list (API_SPEC §1.2a); a grid cell is a candidate iff some
+rule admits it (its `days` cover the weekday AND its window admits the time,
+`earliest` inclusive / `latest` exclusive). `match_candidates` returns bookable
+cells sorted by **(rule index, date, time, centre)** — so the catcher books the
+highest-priority wanted slot first, and "priority" is literally the order the
+owner added the rules in Telegram. Empty `rules` = fully permissive (any day/any
+time). A `my_booking` cell is skipped here (grid-level idempotency).
 
 **Build cost:** the week grid is a *different page* from the single-date
 courts×times grid the current `parse_timetable` handles, and it exposes
@@ -621,10 +629,44 @@ sprinter acts only on nights where D+7 is a preferred day and **skips the drop
 otherwise**. Correct (why win a court on an unwanted day?) but a behaviour change
 to record: the sprinter goes from "every night" to "preferred-day eves only".
 
-**Weekly cap** is counted from EA's **Manage Bookings** (authoritative — you may
-book manually too; `has_booking` already distinguishes paid vs held), read at
-cycle start — not from a local counter that could drift. Semantics: paid-only,
-Monday reset, activity jobs excluded, default 3, Telegram-settable.
+**Two distinct ceilings** (both counted from EA's **Manage Bookings** —
+authoritative, since you may book manually too — read at cycle start, not from a
+local counter that could drift):
+
+- **`weekly_cap`** (default 3, `/cap`): max **PAID court** bookings per
+  **Monday-reset** week. Activity jobs excluded.
+- **`max_holds`** (default 5, `/holds`): max **concurrent UNPAID holds** the
+  catcher may have outstanding at once — a global stop, checked at the
+  highest-priority bookable candidate so that is the one held off. Separate from
+  the paid cap because they bound different resources (money spent this week vs
+  slots parked unpaid right now); either at 0 pauses booking.
+
+**Court identification is split by CONSUMER, and each use is routed to the
+identification whose failure is SAFE for that use** (fail-open vs fail-closed).
+A booking row in Manage Bookings can be a court or a non-court (a paid swim/gym).
+Two ways to decide "is this a court":
+
+- *Negative rule* — "any non-activity booking is a court" (generous; can
+  **over**-count).
+- *Positive court-ID* — "a court only if its row text contains a configured
+  surface token" (`config/targets.yaml` `courts.surfaces[].match`, e.g.
+  `"Tennis - Synth"`); precise, but a token miss **under**-counts.
+
+The routing:
+
+| Consumer | Identification | Why that one is safe here |
+|---|---|---|
+| **Paid weekly cap** (`count_paid_court_bookings`) | **Positive** court-ID (token) | A paid **swim** must not eat the court budget. Under-count risk is contained: on a token miss it **falls back** to the negative rule and logs `court_token_divergence`, so the failure becomes an over-count (skip a winnable court), never an over-book. |
+| **Idempotency** (`held_court_date_keys`) | **Negative** rule | Its unsafe direction is UNDER-counting → re-booking a slot we already hold (a hold storm). Over-counting only makes it skip a date. So it deliberately treats any non-activity booking as ours. |
+| **Holds ceiling** (`count_unpaid_holds`) | **Negative** rule | Over-counting only trips the ceiling sooner (hold off); under-counting yields a ceiling that never trips. Fail-safe = over-count. |
+
+The lesson: precision is *not* globally better — the right identification is the
+one whose **failure mode is the safe one for that guard**. Money-safety (don't
+spend the budget on a swim) wants precision; anti-double-book and
+anti-hold-storm want the generous rule. (The one place positive-ID could
+under-count is on the box — a real court whose row text lost its surface token —
+which is exactly what `court_token_divergence` logs loudly. Verifying real
+Manage-Bookings court text carries a token before going live is a BACKLOG gate.)
 
 ### 8.7 Lapsed-hold re-booking (per-slot state)
 
@@ -640,20 +682,39 @@ awake to pay:
 Needs **per-slot memory across cycles** (first-held timestamp + re-book count,
 restart-surviving) — held in the mutable-JSON store (§8.5).
 
-### 8.8 Live flip — Telegram-settable, guarded
+### 8.8 Live flip — two independent switches, Telegram-settable, guarded
 
-`live` is a config field, settable from Telegram (owner's choice — convenience
-over a deploy-level barrier). Two guards make it safe:
+There are **two** live bookers, so **two** independent flags: `catcher_live` and
+`drop_live` (schema v2). Each is armed/disarmed on its own (`/catcher`, `/drop`);
+the old single `live` is now a read-only convenience property (= "is either
+armed") used only for display. Why split them: arming the newer catcher and
+arming the nightly drop are separate consent decisions, and the owner may well
+want one live while the other stays in dry-run. A v1 `live:true` migrates to
+`drop_live` **only** (API_SPEC §1.6) — the catcher never inherits consent it was
+never given.
 
-1. **Confirm handshake on the live *transition only*** (`/live on` → "reply
-   CONFIRM" → enabled). Routine changes stay instant; the speed bump sits only
-   in front of the one consequential action (real holds).
-2. **Mode always surfaced** — the daily heartbeat and read-back lead with
-   **LIVE**/**DRY-RUN**, closing the "invisible persisted state" gap that a
-   Telegram-set flag (vs a git-visible compose flag) otherwise opens.
+Three guards make it safe:
+
+1. **Confirm handshake on each `false→true` transition** (`/catcher on` /
+   `/drop on` → "reply CONFIRM within 2 min" → armed), the handshake tagged with
+   which switch it arms. Routine changes and `off` stay instant; the speed bump
+   sits only in front of arming real holds.
+2. **A panic path with no speed bump** — `/live off` turns BOTH off immediately.
+   The safe direction is always frictionless.
+3. **Mode always surfaced** — the daily heartbeat and `/status` lead with
+   **LIVE**/**DRY-RUN** and then show each booker's state, closing the
+   "invisible persisted state" gap that a Telegram-set flag (vs a git-visible
+   compose flag) otherwise opens. A `degraded` read forces **both** flags off.
 
 Underlying net unchanged: every live booking is hold-and-notify — immediately
 visible, lapses in ~1h if unpaid. Bounded blast radius.
+
+**Known limitation — the drop honours a rule's floor but not its ceiling.** The
+single-date engine (`run_drop` → `_run_court` → `choose_court_slots`) has only an
+`after_time` param, no upper bound, so the drop enforces a rule's `earliest` but
+**not** its `latest`; the catcher enforces both. `/status` warns when `drop_live`
+is set and any rule carries a `latest`. A `before_time` engine param is on the
+BACKLOG.
 
 ### 8.9 Notifications
 

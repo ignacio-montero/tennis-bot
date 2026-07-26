@@ -15,10 +15,15 @@ CENTRES = ["paddington", "westway"]
 NOW = dt.datetime(2026, 7, 24, 10, 0, tzinfo=LONDON)
 
 
-def send(text, prefs=None, chat_id=OWNER, now=NOW, pending=None, **kw):
+def send(text, prefs=None, chat_id=OWNER, now=NOW, pending=None, target="both",
+         **kw):
+    # `target` defaults to "both" because every handshake this suite arms is
+    # `/live on` (= both). The pure handler now FAILS CLOSED on an untargeted
+    # CONFIRM (W3), so the target must be threaded exactly as the session does.
     return handle_message(text, chat_id, prefs or Prefs.defaults(),
                           owner_chat_id=OWNER, now=now,
                           pending_confirm_until=pending,
+                          pending_confirm_target=(target if pending else None),
                           valid_centres=CENTRES, **kw)
 
 
@@ -46,7 +51,7 @@ def test_foreign_chat_id_cannot_reach_the_store(tmp_path):
 def test_status_leads_with_the_mode():
     # §8.8: a Telegram-set `live` flag is invisible persisted state unless the
     # read-back shouts it, so mode comes FIRST, before any preference.
-    r = send("/status", Prefs(live=True, days=("Tue",), earliest="18:00"))
+    r = send("/status", Prefs(catcher_live=True, drop_live=True, days=("Tue",), earliest="18:00"))
     assert r.prefs is None                        # a read never writes
     assert r.reply.splitlines()[0].endswith("<b>LIVE</b>")
     assert "18:00" in r.reply and "Tue" in r.reply
@@ -158,7 +163,7 @@ def test_unknown_command_and_chatter_get_a_pointer_not_a_change():
 # -- live handshake (§2.3) ---------------------------------------------------
 
 def test_live_off_is_immediate():
-    r = send("/live off", Prefs(live=True))
+    r = send("/live off", Prefs(catcher_live=True, drop_live=True))
     assert r.prefs.live is False and "DRY-RUN" in r.reply
 
 
@@ -217,7 +222,7 @@ def test_re_sending_live_on_re_arms_the_handshake():
 
 
 def test_live_on_when_already_live_is_a_no_op():
-    r = send("/live on", Prefs(live=True))
+    r = send("/live on", Prefs(catcher_live=True, drop_live=True))
     assert r.prefs is None and r.pending_confirm_until is None
 
 

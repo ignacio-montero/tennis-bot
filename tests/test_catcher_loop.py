@@ -53,7 +53,7 @@ class FakeScanner:
 
     def book(self, centre, date, time, prefs):
         self.booked.append((centre, date, time))
-        return RunResult(ok=True, dry_run=not prefs.live, message="would book",
+        return RunResult(ok=True, dry_run=not prefs.catcher_live, message="would book",
                          chosen=Slot(date=date, time=time, court="Court 1",
                                      available=True, selector="#x"),
                          screenshot_path=None)

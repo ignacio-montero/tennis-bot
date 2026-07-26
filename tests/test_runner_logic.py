@@ -299,19 +299,45 @@ def test_drop_loop_slot_length_two_forces_two_hours(monkeypatch):
 
 
 def test_drop_loop_prefs_live_flips_to_live(monkeypatch):
-    # prefs.live true ⇒ the loop books live even with no CLI --live (dry_run=True).
-    runner, fired = _loop_env(monkeypatch, prefs=Prefs(live=True))
+    # prefs.drop_live true ⇒ the loop books live even with no CLI --live.
+    runner, fired = _loop_env(monkeypatch, prefs=Prefs(drop_live=True))
     _pin_next_drop(monkeypatch, runner, "2026-08-04")
     runner.run_drop_loop(target_key="paddington", dry_run=True, notify=False,
                          max_iters=1)
     assert len(fired) == 1 and fired[0]["dry_run"] is False
 
 
+def test_drop_loop_catcher_live_alone_does_NOT_make_the_drop_book_live(monkeypatch):
+    # The two switches are INDEPENDENT (Q2b): arming only the CATCHER must leave
+    # the drop in dry-run. The drop gate reads `drop_live`, not the combined
+    # `live`, so catcher_live=True with drop_live=False must NOT book the drop.
+    runner, fired = _loop_env(monkeypatch,
+                              prefs=Prefs(catcher_live=True, drop_live=False))
+    _pin_next_drop(monkeypatch, runner, "2026-08-04")
+    runner.run_drop_loop(target_key="paddington", dry_run=True, notify=False,
+                         max_iters=1)
+    assert len(fired) == 1 and fired[0]["dry_run"] is True     # drop stays dry
+
+
+def test_drop_loop_earliest_for_date_picks_the_matching_rules_floor(monkeypatch):
+    # §7: the drop's window comes from the rule matching the DROP DATE, not a
+    # single global window. Rule for Sat = 10:00, rule for Sun = 18:00; a Sat
+    # drop must use 10:00. 2026-08-01 is a Saturday.
+    from tennisbot.prefs import Rule
+    prefs = Prefs(rules=(Rule(days=("Sun",), earliest="18:00"),
+                         Rule(days=("Sat",), earliest="10:00")))
+    runner, fired = _loop_env(monkeypatch, prefs=prefs)
+    _pin_next_drop(monkeypatch, runner, "2026-08-01")          # a Saturday
+    runner.run_drop_loop(target_key="paddington", after_time="20:00",
+                         notify=False, max_iters=1)
+    assert len(fired) == 1 and fired[0]["after_time"] == "10:00"
+
+
 def test_drop_loop_degraded_prefs_forces_dry_run(monkeypatch):
     # A half-read config forces dry-run even when --live is set (§1.4a refuse to
     # book): degraded overrides the deploy-level --live. This is the safety net.
     runner, fired = _loop_env(monkeypatch,
-                              prefs=Prefs(degraded=("weekly_cap",), live=False))
+                              prefs=Prefs(degraded=("weekly_cap",)))
     _pin_next_drop(monkeypatch, runner, "2026-08-04")
     runner.run_drop_loop(target_key="paddington", dry_run=False, notify=False,
                          max_iters=1)
@@ -345,7 +371,7 @@ def test_drop_loop_default_FILE_on_disk_fires_identically(monkeypatch, tmp_path)
 def test_drop_loop_prefs_live_AND_cli_live_both_set_books(monkeypatch):
     # Completes the live-gate truth table: (prefs.live=T, cli --live=T, degraded=F)
     # ⇒ live. The two live sources are OR'd, so both-on must still book.
-    runner, fired = _loop_env(monkeypatch, prefs=Prefs(live=True))
+    runner, fired = _loop_env(monkeypatch, prefs=Prefs(drop_live=True))
     _pin_next_drop(monkeypatch, runner, "2026-08-04")
     runner.run_drop_loop(target_key="paddington", dry_run=False, notify=False,
                          max_iters=1)
@@ -409,7 +435,7 @@ def test_drop_loop_degraded_prefs_vetoes_even_telegram_live(monkeypatch):
     monkeypatch.setattr(runner, "load_targets", lambda: {"paddington": _target(False)})
     monkeypatch.setattr(_t, "sleep", lambda *a, **k: None)
     monkeypatch.setattr(runner, "load_prefs",
-                        lambda *a, **k: Prefs(degraded=("weekly_cap",), live=True))
+                        lambda *a, **k: Prefs(degraded=("weekly_cap",), drop_live=True))
     seen = []
     monkeypatch.setattr(runner, "run_drop", lambda **k: seen.append(k["dry_run"]))
     runner.run_drop_loop(target_key="paddington", max_iters=1, notify=False,
