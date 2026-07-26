@@ -572,3 +572,47 @@ def test_validate_also_rejects_bool_slot_length():
         with pytest.raises(PrefsError):
             validate(replace(Prefs.defaults(), slot_length_hours=bad),
                      ["paddington"])
+
+
+def test_missing_version_defaults_silently_not_degraded(tmp_path):
+    # A hand-edited/partial prefs.json without a `version` key must default the
+    # version like any other absent field — NOT mark the doc degraded (which
+    # would force dry-run). Only a NEWER-than-ours or malformed version degrades.
+    # (Regression: a missing version briefly degraded every partial doc, so a
+    # hand-edited config with live:true was silently stuck in dry-run.)
+    p = load_prefs(write(tmp_path, '{"live": true, "earliest": "18:00"}'))
+    assert p.degraded == () and p.live is True and p.version == 1
+
+
+def test_newer_schema_version_degrades_forcing_dry_run(tmp_path):
+    # A version we don't understand may have changed field meanings — refuse to
+    # guess, force dry-run (the safe direction for an unknown schema).
+    p = load_prefs(write(tmp_path, '{"version": 99, "live": true}'))
+    assert p.live is False and "version" in p.degraded
+
+
+@pytest.mark.parametrize("doc", [
+    '{"version": "1", "live": true}',     # string, not int — a hand-edit
+    '{"version": true, "live": true}',    # bool (True == 1, but not honourable)
+    '{"version": 1.0, "live": true}',     # float — range()/schema logic wants int
+    '{"version": null, "live": true}',    # explicit null is "absent"? see below
+])
+def test_malformed_version_forces_dry_run(doc, tmp_path):
+    # A version we can't parse is corruption (not a partial/absent field), so it
+    # must degrade → force dry-run — EXCEPT explicit null, which the code treats
+    # as "absent" (version is None ⇒ default). This pins that boundary so a
+    # future refactor can't silently start degrading a legitimately-absent key.
+    p = load_prefs(write(tmp_path, doc))
+    if "null" in doc:
+        assert p.degraded == () and p.live is True    # null ≡ absent ⇒ OK
+    else:
+        assert p.live is False and "version" in p.degraded
+
+
+@pytest.mark.parametrize("v", [1, 0])
+def test_equal_or_older_version_is_not_degraded(v, tmp_path):
+    # Only a version NEWER than ours can have changed field meanings. An exact
+    # match and an older doc are both readable by a v1 reader ⇒ never degrade,
+    # so a live:true survives (mirror of the newer-version test above).
+    p = load_prefs(write(tmp_path, json.dumps({"version": v, "live": True})))
+    assert p.degraded == () and p.live is True
