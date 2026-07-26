@@ -589,3 +589,30 @@ def test_newer_schema_version_degrades_forcing_dry_run(tmp_path):
     # guess, force dry-run (the safe direction for an unknown schema).
     p = load_prefs(write(tmp_path, '{"version": 99, "live": true}'))
     assert p.live is False and "version" in p.degraded
+
+
+@pytest.mark.parametrize("doc", [
+    '{"version": "1", "live": true}',     # string, not int — a hand-edit
+    '{"version": true, "live": true}',    # bool (True == 1, but not honourable)
+    '{"version": 1.0, "live": true}',     # float — range()/schema logic wants int
+    '{"version": null, "live": true}',    # explicit null is "absent"? see below
+])
+def test_malformed_version_forces_dry_run(doc, tmp_path):
+    # A version we can't parse is corruption (not a partial/absent field), so it
+    # must degrade → force dry-run — EXCEPT explicit null, which the code treats
+    # as "absent" (version is None ⇒ default). This pins that boundary so a
+    # future refactor can't silently start degrading a legitimately-absent key.
+    p = load_prefs(write(tmp_path, doc))
+    if "null" in doc:
+        assert p.degraded == () and p.live is True    # null ≡ absent ⇒ OK
+    else:
+        assert p.live is False and "version" in p.degraded
+
+
+@pytest.mark.parametrize("v", [1, 0])
+def test_equal_or_older_version_is_not_degraded(v, tmp_path):
+    # Only a version NEWER than ours can have changed field meanings. An exact
+    # match and an older doc are both readable by a v1 reader ⇒ never degrade,
+    # so a live:true survives (mirror of the newer-version test above).
+    p = load_prefs(write(tmp_path, json.dumps({"version": v, "live": True})))
+    assert p.degraded == () and p.live is True

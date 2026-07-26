@@ -588,38 +588,45 @@ def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
                      drop_date=target_date, lead_min=lead_min)
             _time.sleep(gap)
 
-        # Pre-arm: read the shared prefs fresh (governs both jobs, §8.6). Never
-        # raises — a missing/corrupt file degrades to safe defaults (§1.1/§1.4a).
-        prefs = load_prefs(config_dir)
-
-        # Day-filter (§8.6): the drop releases exactly one weekday (D+7). If that
-        # weekday isn't preferred, skip tonight and reschedule to the next night
-        # — crucially WITHOUT logging in, so we don't burn an EA session (or race
-        # the blackout) on a night we don't want a court anyway. Empty `days`
-        # ⇒ allows_date is always True ⇒ this never fires (backward-compatible).
-        if not prefs.allows_date(target_date):
-            log.info("drop_loop.skipped_not_preferred_day",
-                     drop_date=target_date, days=list(prefs.days))
-            handled = instant
-            continue
-
-        # Precedence: a SET prefs field wins; otherwise fall back to the CLI arg
-        # so no/default prefs behaves exactly as today.
-        eff_after = prefs.earliest if prefs.earliest is not None else after_time
-        # slot_length_hours: only force two-hours ON (==2). ==1 is the default and
-        # is indistinguishable from "unset", so forcing it OFF could override the
-        # target's own config on a default read — which backward-compat forbids.
-        eff_two_hours = True if prefs.slot_length_hours == 2 else None
-        # Live gate = prefs.live OR --live (the unified Telegram-live AND a
-        # deploy-level --live both work). `prefs.degraded` forces dry-run: a
-        # half-read config means we can't trust the owner's intent, so refuse to
-        # book live even if --live is set (§1.4a "refuse to book").
-        live = (prefs.live or (not dry_run)) and not prefs.degraded
-
-        log.info("drop_loop.fire", drop_date=target_date, dry_run=not live,
-                 mode=("LIVE" if live else "DRY-RUN"), after_time=eff_after,
-                 two_hours=bool(eff_two_hours), degraded=list(prefs.degraded))
+        # The WHOLE iteration body is guarded, not just run_drop: the config read
+        # and the day-filter that GATE the booking must not be able to kill the
+        # nightly daemon either. `load_prefs` is engineered never to raise today,
+        # but the guard should match the "never let one night kill the loop"
+        # invariant's scope, not trail it (defense-in-depth).
         try:
+            # Pre-arm: read the shared prefs fresh (governs both jobs, §8.6). A
+            # missing/corrupt file degrades to safe defaults (§1.1/§1.4a).
+            prefs = load_prefs(config_dir)
+
+            # Day-filter (§8.6): the drop releases exactly one weekday (D+7). If
+            # that weekday isn't preferred, skip tonight and reschedule to the
+            # next night — WITHOUT logging in, so we don't burn an EA session (or
+            # race the blackout) on a night we don't want a court. Empty `days`
+            # ⇒ allows_date always True ⇒ never fires (backward-compatible).
+            if not prefs.allows_date(target_date):
+                log.info("drop_loop.skipped_not_preferred_day",
+                         drop_date=target_date, days=list(prefs.days))
+                handled = instant
+                continue
+
+            # Precedence: a SET prefs field wins; otherwise fall back to the CLI
+            # arg so no/default prefs behaves exactly as today.
+            eff_after = (prefs.earliest if prefs.earliest is not None
+                         else after_time)
+            # slot_length_hours: only force two-hours ON (==2). ==1 is the default
+            # and indistinguishable from "unset", so forcing it OFF could override
+            # the target's own config on a default read — backward-compat forbids.
+            eff_two_hours = True if prefs.slot_length_hours == 2 else None
+            # Live gate = prefs.live OR --live (unified Telegram-live AND a
+            # deploy-level --live both work). `prefs.degraded` forces dry-run: a
+            # half-read config means we can't trust the owner's intent, so refuse
+            # to book live even if --live is set (§1.4a "refuse to book").
+            # NB: the parens are load-bearing — `and` binds tighter than `or`.
+            live = (prefs.live or (not dry_run)) and not prefs.degraded
+
+            log.info("drop_loop.fire", drop_date=target_date, dry_run=not live,
+                     mode=("LIVE" if live else "DRY-RUN"), after_time=eff_after,
+                     two_hours=bool(eff_two_hours), degraded=list(prefs.degraded))
             run_drop(target_key=target_key, dry_run=not live, headless=headless,
                      want_time=want_time, after_time=eff_after,
                      two_hours=eff_two_hours, notify=notify, epsilon=epsilon,
