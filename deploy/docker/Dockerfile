@@ -33,12 +33,15 @@ COPY config/ /app/config/
 # Writable dirs for the non-root user:
 #  /data/watchd     — watchd state (observations.jsonl, bracket.json) → volume
 #  /data/drop       — drop outcomes (drop-outcomes.jsonl)             → volume
+#  /data/catch      — catcher state (catcher-state.json)              → volume
 #  /app/.session    — Playwright storage_state (ea_state.json)        → volume
 #  /app/screenshots — diagnostic screenshots (ephemeral is fine)
 # Pre-creating the volume mountpoints as pwuser means a FRESH named volume
 # initialises writable for the non-root user (Docker seeds a new volume with the
-# mountpoint's ownership from the image).
-RUN mkdir -p /data/watchd /data/drop /app/.session /app/screenshots \
+# mountpoint's ownership from the image). Without /data/catch here, a fresh
+# tennisbot-catch-state volume mounted root-owned and the catcher's writes failed
+# `Permission denied` until a one-time manual chown (homelab decisions 2026-07-26).
+RUN mkdir -p /data/watchd /data/drop /data/catch /app/.session /app/screenshots \
     && chown -R pwuser:pwuser /data /app/.session /app/screenshots
 
 USER pwuser

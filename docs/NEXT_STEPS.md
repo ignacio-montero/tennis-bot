@@ -22,10 +22,14 @@ auto-migrates on read; it rewrites as v2 on the next Telegram edit.
    `/holds`, `/cap`) once you want something other than the seed "any day ≥19:00".
 3. **Go live deliberately, per job:** `/drop on` and/or `/catcher on` (each a
    2-min CONFIRM). Watch a night/cycle before trusting it unattended.
-4. **Backlog niceties** (non-blocking): drop `before_time` so it honours a rule's
-   `latest` ceiling (today only the catcher does); rule REORDER command; add
-   `/data/catch` to the Dockerfile (retire the one-time chown); in-process
-   transport so `/status` shows real `paid_this_week`/`next_scan`.
+4. **Backlog niceties** (non-blocking): ✅ drop `latest` ceiling, ✅ `/rule move`,
+   ✅ `/data/catch` in the Dockerfile, ✅ rich `/help` (all done 2026-07-27,
+   v0.6.0). Remaining: drop honouring the UNION of same-day rules (BACKLOG §2 —
+   today it uses only the top rule per weekday); in-process transport so `/status`
+   shows real `paid_this_week`/`next_scan`.
+
+_v0.6.0 is committed/tagged; the homelab box is still on 0.5.0 — roll it with the
+usual pull-loop when you want the drop-ceiling / `/rule move` / `/help` live._
 
 The rehearsal notes below stay as booking-behaviour reference.
 

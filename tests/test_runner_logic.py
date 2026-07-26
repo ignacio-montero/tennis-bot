@@ -90,6 +90,90 @@ def test_after_time_none_available_returns_empty():
     assert chosen == []
 
 
+# ── before_time (EXCLUSIVE ceiling mirroring a rule's `latest`) ─────────────
+def test_before_time_is_an_exclusive_ceiling():
+    # A slot AT before_time is EXCLUDED (exclusive, like prefs `latest`); the
+    # 11:00 slot strictly below the 12:00 ceiling is still eligible.
+    below = [_slot("11:00", "Court 1")]
+    assert choose_court_slots(below, _target(False), want_time="11:00",
+                              before_time="12:00")[0].time == "11:00"
+    at = [_slot("12:00", "Court 3")]
+    assert choose_court_slots(at, _target(False), want_time="12:00",
+                              before_time="12:00") == []
+
+
+def test_before_time_filters_the_after_time_pool():
+    # Without a ceiling, after 10:00 would book the only free slot (12:00). The
+    # ceiling drops it from the candidate pool → nothing bookable.
+    slots = [_slot("12:00", "Court 3")]
+    assert choose_court_slots(slots, _target(False), want_time=None,
+                              after_time="10:00") != []            # baseline
+    assert choose_court_slots(slots, _target(False), want_time=None,
+                              after_time="10:00", before_time="12:00") == []
+
+
+def test_before_time_none_is_backward_compatible():
+    # Regression: before_time=None (and the absent default) leaves selection
+    # byte-for-byte identical to today's behaviour.
+    slots = [_slot("18:00", "Court 1"), _slot("19:00", "Court 2")]
+    a = choose_court_slots(slots, _target(False), want_time=None)
+    b = choose_court_slots(slots, _target(False), want_time=None,
+                           before_time=None)
+    assert [s.time for s in a] == [s.time for s in b] == ["18:00"]
+
+
+def test_before_time_two_hours_requires_both_hours_within_ceiling():
+    # A 2-hour block 11:00+12:00 with a 12:00 ceiling: the SECOND hour is at the
+    # ceiling → the full block is disallowed; fall back to the single 11:00 hour.
+    slots = [_slot("11:00", "Court 1"), _slot("12:00", "Court 1")]
+    chosen = choose_court_slots(slots, _target(True), want_time=None,
+                                after_time="10:00", before_time="12:00")
+    assert len(chosen) == 1 and chosen[0].time == "11:00"
+    # Raise the ceiling to 13:00 and BOTH hours fit → the full block is booked.
+    slots2 = [_slot("11:00", "Court 1"), _slot("12:00", "Court 1")]
+    full = choose_court_slots(slots2, _target(True), want_time=None,
+                              after_time="10:00", before_time="13:00")
+    assert [s.time for s in full] == ["11:00", "12:00"]
+
+
+def test_before_time_filters_the_ranked_prefs_path():
+    # The PRODUCTION money path: no want_time, no after_time — selection comes
+    # from the target's ranked prefs (_candidate_times), not an explicit filter.
+    # The ceiling must gate that pool too. _target wants Wed 18:00; 2026-07-01
+    # (the _slot date) is a Wednesday, so 18:00 is the ranked candidate.
+    slots = [_slot("18:00", "Court 1")]
+    # Ceiling strictly ABOVE the wanted slot ⇒ still booked.
+    assert choose_court_slots(slots, _target(False), want_time=None,
+                              before_time="19:00")[0].time == "18:00"
+    # Ceiling AT the wanted slot (exclusive) ⇒ the sole ranked candidate is
+    # dropped before selection ⇒ nothing booked.
+    assert choose_court_slots(slots, _target(False), want_time=None,
+                              before_time="18:00") == []
+
+
+def test_before_time_after_time_picks_earliest_within_the_band():
+    # Both bounds set: among the slots inside [after_time, before_time) the
+    # EARLIEST still wins (after_time semantics unchanged), and the slot AT the
+    # ceiling (13:00) is excluded from the band.
+    slots = [_slot("10:00", "Court 1"), _slot("11:00", "Court 2"),
+             _slot("12:00", "Court 3"), _slot("13:00", "Court 4")]
+    chosen = choose_court_slots(slots, _target(False), want_time=None,
+                                after_time="11:00", before_time="13:00")
+    assert len(chosen) == 1 and chosen[0].time == "11:00"     # earliest in band
+
+
+def test_before_time_latest_slot_strictly_below_ceiling_is_eligible():
+    # Only the 12:00 slot — the LATEST strictly below a 13:00 ceiling — is free
+    # (10:00 taken, 13:00 at the ceiling). It must still be bookable: the ceiling
+    # excludes AT/above, never below.
+    slots = [_slot("10:00", "Court 1", avail=False),
+             _slot("12:00", "Court 3"),
+             _slot("13:00", "Court 4")]
+    chosen = choose_court_slots(slots, _target(False), want_time=None,
+                                after_time="10:00", before_time="13:00")
+    assert len(chosen) == 1 and chosen[0].time == "12:00"
+
+
 # ── drop-loop sidecar (self-scheduling trigger) ─────────────────────────────
 def test_drop_loop_advances_one_night_and_never_refires(monkeypatch):
     # The sidecar must book once per night and always schedule strictly forward
@@ -331,6 +415,62 @@ def test_drop_loop_earliest_for_date_picks_the_matching_rules_floor(monkeypatch)
     runner.run_drop_loop(target_key="paddington", after_time="20:00",
                          notify=False, max_iters=1)
     assert len(fired) == 1 and fired[0]["after_time"] == "10:00"
+
+
+def test_drop_loop_latest_for_date_sets_before_time(monkeypatch):
+    # §A: the drop now enforces a rule's ceiling. A `Sat 10:00-12:00` rule must
+    # hand the drop BOTH ends of the matching rule's window on a Saturday drop —
+    # eff_after="10:00" AND eff_before="12:00" — sourced from the SAME rule.
+    from tennisbot.prefs import Rule
+    prefs = Prefs(rules=(Rule(days=("Sat",), earliest="10:00", latest="12:00"),))
+    runner, fired = _loop_env(monkeypatch, prefs=prefs)
+    _pin_next_drop(monkeypatch, runner, "2026-08-01")          # a Saturday
+    runner.run_drop_loop(target_key="paddington", notify=False, max_iters=1)
+    assert len(fired) == 1
+    assert fired[0]["before_time"] == "12:00"
+    assert fired[0]["after_time"] == "10:00"
+
+
+def test_drop_loop_ceiling_only_rule_does_not_invert_the_band(monkeypatch):
+    # Critic S1: a ceiling-only rule (`Sat -12:00`, no floor) must NOT fall back
+    # to the CLI --after for its floor. With --after 19:00 that fallback gives the
+    # inverted band [19:00, 12:00) → nothing bookable → silently books nothing. A
+    # matched rule is authoritative: its missing floor becomes 00:00 ("earliest
+    # available up to the ceiling"), which is what the rule means.
+    from tennisbot.prefs import Rule
+    prefs = Prefs(rules=(Rule(days=("Sat",), earliest=None, latest="12:00"),))
+    runner, fired = _loop_env(monkeypatch, prefs=prefs)
+    _pin_next_drop(monkeypatch, runner, "2026-08-01")          # a Saturday
+    runner.run_drop_loop(target_key="paddington", after_time="19:00",
+                         notify=False, max_iters=1)
+    assert len(fired) == 1
+    assert fired[0]["after_time"] == "00:00"    # NOT "19:00": no inverted band
+    assert fired[0]["before_time"] == "12:00"
+
+
+def test_drop_loop_bare_any_rule_ignores_cli_after_floor(monkeypatch):
+    # A matched rule with no window (`/rule Sat any`) is authoritative: "any" means
+    # any time, so the floor is 00:00 — NOT the CLI --after 19:00, which applies
+    # only when NO rule is configured. No ceiling ⇒ before_time stays None.
+    from tennisbot.prefs import Rule
+    prefs = Prefs(rules=(Rule(days=("Sat",), earliest=None, latest=None),))
+    runner, fired = _loop_env(monkeypatch, prefs=prefs)
+    _pin_next_drop(monkeypatch, runner, "2026-08-01")          # a Saturday
+    runner.run_drop_loop(target_key="paddington", after_time="19:00",
+                         notify=False, max_iters=1)
+    assert len(fired) == 1
+    assert fired[0]["after_time"] == "00:00"
+    assert fired[0]["before_time"] is None
+
+
+def test_drop_loop_no_ceiling_leaves_before_time_none(monkeypatch):
+    # Backward-compat: a rule with only a floor (or no rule) sets NO ceiling, and
+    # there is no CLI fallback for before_time — so it stays None (today's exact
+    # behaviour: the drop books with no upper bound).
+    runner, fired = _loop_env(monkeypatch, prefs=Prefs(earliest="18:00"))
+    _pin_next_drop(monkeypatch, runner, "2026-08-04")
+    runner.run_drop_loop(target_key="paddington", notify=False, max_iters=1)
+    assert len(fired) == 1 and fired[0]["before_time"] is None
 
 
 def test_drop_loop_degraded_prefs_forces_dry_run(monkeypatch):

@@ -42,19 +42,23 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   shared by BOTH the catcher and the drop booker. Scoped in a dedicated PRD:
   [PRD-cancellation-catcher.md](PRD-cancellation-catcher.md) (draft 2026-07-23).
   EA week-grid feasibility validated by live probe same day.
-- 🔵 **Drop should enforce a rule's `latest` (upper time bound)** — the catcher
-  honours both ends of a rule's window, but the midnight drop honours only
-  `earliest` (the floor). The single-date engine (`run_drop` → `_run_court` →
-  `choose_court_slots`) has just an `after_time` param, no ceiling, so a rule
-  like `Tue 10:00-12:00` would let the drop book a 14:00 court. `/status` warns
-  when `drop_live` is set and any rule has a `latest`. Fix: add a `before_time`
-  (upper-bound) engine param mirroring `after_time`, then feed it from
-  `latest_for_date` in `run_drop_loop`. Engine change — out of scope of the v2
-  prefs change that surfaced it.
-- 🟡 **Rule REORDER command** — rule priority is list order, but there is no way
-  to re-rank in place: reordering today means `/rules clear` + re-adding in the
-  new order. A `/rule move <from> <to>` (or `/rule up/down N`) would let the
-  owner re-prioritise without losing rules.
+- ✅ **Drop enforces a rule's `latest` (upper time bound)** *(2026-07-27)* — added a
+  `before_time` (exclusive ceiling) engine param mirroring `after_time`, threaded
+  `run_drop_loop → run_drop → _run_court → choose_court_slots`, fed from
+  `latest_for_date`. A matched rule is now authoritative for the drop's window
+  (ceiling-only rules use a 00:00 floor, not the CLI `--after`, so the band can't
+  invert). The old `/status` "floor-only" warning was removed.
+- 🟡 **Drop should honour the UNION of all same-day rules' windows** — the drop
+  currently pursues only the HIGHEST-PRIORITY rule matching a weekday
+  (`_rule_for_date`, day-only), whereas the catcher considers ALL rules
+  (`matching_rule`, day+window). So with two rules on the same weekday
+  (`Sat 18:00-20:00` prio 1, `Sat 10:00-12:00` prio 2) the midnight drop only
+  chases 18:00-20:00 while the catcher would also catch a freed 11:00. Safe
+  (drop ⊆ catcher) but not full parity. Fuller fix: have the drop book the
+  earliest slot in ANY same-day rule's window, in priority order.
+- ✅ **Rule REORDER command** *(2026-07-27)* — `/rule move <from> <to>` (1-based)
+  re-prioritises without losing rules; validated positions, `from==to` no-op,
+  `<2 rules` rejected.
 - 🟡 **Concurrency / racing** — fire attempts for ranked alternatives at the
   drop, first-win-cancels-rest (architecture already designed for this).
 - 🟡 **Court preferences** — prefer/avoid specific courts (we already capture the

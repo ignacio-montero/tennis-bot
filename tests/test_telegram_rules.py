@@ -89,6 +89,95 @@ def test_rules_list_shows_priority_numbers():
 
 
 # ---------------------------------------------------------------------------
+# /rule move (reorder in place) — §B
+# ---------------------------------------------------------------------------
+
+def _three():
+    return Prefs(rules=(Rule(days=("Mon",)), Rule(days=("Tue",)),
+                        Rule(days=("Wed",))))
+
+
+def test_rule_move_back_to_front():
+    got = send("/rule move 3 1", _three()).prefs
+    assert got.rules == (Rule(days=("Wed",)), Rule(days=("Mon",)),
+                         Rule(days=("Tue",)))
+
+
+def test_rule_move_front_to_back():
+    got = send("/rule move 1 3", _three()).prefs
+    assert got.rules == (Rule(days=("Tue",)), Rule(days=("Wed",)),
+                         Rule(days=("Mon",)))
+
+
+def test_rule_move_adjacent_swap():
+    got = send("/rule move 2 1", _three()).prefs
+    assert got.rules == (Rule(days=("Tue",)), Rule(days=("Mon",)),
+                         Rule(days=("Wed",)))
+
+
+def test_rule_move_same_position_is_a_noop_success():
+    p = _three()
+    r = send("/rule move 2 2", p)
+    assert r.prefs is not None and r.prefs.rules == p.rules   # unchanged
+    assert "no change" in r.reply.lower()
+
+
+def test_rule_move_out_of_range_is_rejected():
+    for bad in ("/rule move 0 1", "/rule move 1 4", "/rule move 4 1"):
+        r = send(bad, _three())
+        assert r.prefs is None and "positions must be 1" in r.reply
+
+
+def test_rule_move_non_numeric_or_wrong_arity_is_rejected():
+    # Non-digit (incl. a negative "-1", which fails isdigit) and wrong arg count.
+    for bad in ("/rule move a 1", "/rule move 1 b", "/rule move -1 2",
+                "/rule move 2", "/rule move 1 2 3"):
+        r = send(bad, _three())
+        assert r.prefs is None
+
+
+def test_rule_move_needs_at_least_two_rules():
+    one = send("/rule move 1 1", Prefs(rules=(Rule(days=("Mon",)),)))
+    assert one.prefs is None and "Nothing to reorder" in one.reply
+    zero = send("/rule move 1 1")                          # no rules at all
+    assert zero.prefs is None and "Nothing to reorder" in zero.reply
+
+
+def test_rule_move_reply_shows_the_reordered_list():
+    r = send("/rule move 3 1", _three())
+    assert "Moved rule 3 → 1" in r.reply                   # confirmation
+    assert "1. " in r.reply and "Wed" in r.reply           # reuses /rules render
+
+
+def test_rule_move_changes_catcher_priority_end_to_end():
+    # Priority IS list order: matching_rule returns the HIGHEST-priority rule that
+    # admits a slot. Both rules cover Tue and admit 20:00, so the FIRST wins;
+    # moving #2 to #1 flips which rule the catcher/drop would act on for that
+    # slot. 2026-07-28 is a Tuesday.
+    p = Prefs(rules=(Rule(days=("Tue",), earliest="18:00"),
+                     Rule(days=("Tue",), earliest="10:00")))
+    assert p.matching_rule("2026-07-28", "20:00").earliest == "18:00"
+    moved = send("/rule move 2 1", p).prefs
+    assert moved.matching_rule("2026-07-28", "20:00").earliest == "10:00"
+
+
+def test_rule_move_changes_match_candidates_booking_order_end_to_end():
+    # The catcher books in match_candidates() order, whose PRIMARY key is rule
+    # priority (index 0 = first). Two distinguishable rules each admit exactly one
+    # free Tue slot; moving #2 to #1 must flip which candidate the catcher would
+    # book FIRST — proving the reorder reaches the real booking loop, not just the
+    # matching_rule lookup. 2026-07-28 is a Tuesday; NOW (Fri 24th) is before it.
+    from tennisbot.catcher import WeekSlot, match_candidates
+    p = Prefs(rules=(Rule(days=("Tue",), earliest="18:00"),               # evening
+                     Rule(days=("Tue",), earliest="10:00", latest="12:00")))  # morning
+    slots = {"paddington": [WeekSlot("2026-07-28", "10:00", "available", "T"),
+                            WeekSlot("2026-07-28", "18:00", "available", "T")]}
+    assert match_candidates(slots, p, NOW)[0].time == "18:00"     # rule #1 wins
+    moved = send("/rule move 2 1", p).prefs
+    assert match_candidates(slots, moved, NOW)[0].time == "10:00"  # now morning
+
+
+# ---------------------------------------------------------------------------
 # /days & /window as single-rule shorthand + the ≥2-rule guard
 # ---------------------------------------------------------------------------
 
@@ -273,18 +362,13 @@ def test_untargeted_confirm_arms_nothing_fails_closed():
     assert "nothing changed" in r.reply.lower()
 
 
-def test_status_warns_when_drop_is_live_and_a_rule_has_a_ceiling():
-    # W2: the drop enforces only the floor, so surface the caveat — but only when
-    # it matters (drop armed AND a rule carries a `latest`).
+def test_status_no_longer_warns_that_the_drop_ignores_the_ceiling():
+    # The drop now enforces a rule's `latest` (via the engine's `before_time`),
+    # so the old "floor only" caveat is REMOVED. It must not reappear for a live
+    # drop with a ceiling — that would be a stale contradiction of the code.
     p = Prefs(drop_live=True, rules=(Rule(days=("Sat",), earliest="10:00",
                                           latest="15:00"),))
-    assert "only the window FLOOR" in send("/status", p).reply
-    # No ceiling ⇒ no warning.
-    p2 = Prefs(drop_live=True, rules=(Rule(days=("Sat",), earliest="10:00"),))
-    assert "only the window FLOOR" not in send("/status", p2).reply
-    # Drop not live ⇒ no warning even with a ceiling.
-    p3 = Prefs(rules=(Rule(days=("Sat",), earliest="10:00", latest="15:00"),))
-    assert "only the window FLOOR" not in send("/status", p3).reply
+    assert "only the window FLOOR" not in send("/status", p).reply
 
 
 def test_holds_rejects_non_ascii_digits():
@@ -302,6 +386,18 @@ def test_help_lists_the_new_commands():
     r = send("/help")
     for cmd in ("/rules", "/rule", "/holds", "/catcher", "/drop", "/live"):
         assert cmd in r.reply
+
+
+def test_help_defines_every_command_and_fits_telegram():
+    # §C: /help is a COMPLETE reference — every command token must appear, and it
+    # must fit Telegram's 4096-char single-message limit (it's sent in one send).
+    from tennisbot.telegram_commands import HELP
+    tokens = ["/status", "/help", "/centres", "/days", "/window", "/rules",
+              "/rule", "/rule del", "/rule move", "/rules clear", "/length",
+              "/cap", "/holds", "/catcher", "/drop", "/live"]
+    for t in tokens:
+        assert t in HELP, f"HELP is missing {t}"
+    assert len(HELP) < 4096
 
 
 def test_status_renders_two_flags_and_a_rule_list():

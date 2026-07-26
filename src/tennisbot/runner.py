@@ -96,7 +96,8 @@ def _candidate_times(target: Target, target_date: str,
 
 def choose_court_slots(slots: list[Slot], target: Target,
                        want_time: str | None,
-                       after_time: str | None = None) -> list[Slot]:
+                       after_time: str | None = None,
+                       before_time: str | None = None) -> list[Slot]:
     """Pick the slot(s) to book from one surface's grid, honouring ranked
     preferences. Returns [] / [one] / [two] (two = consecutive, same court).
     For 2-hour mode: if the second hour isn't free on the same court, book the
@@ -105,10 +106,26 @@ def choose_court_slots(slots: list[Slot], target: Target,
     `after_time` (HH:MM) overrides ranked prefs: pursue the EARLIEST available
     slot at or after that time, any court — used by the drop dry-run rehearsal
     ('book any court after 19:00'). Times are zero-padded HH:MM so a string
-    compare orders them correctly."""
+    compare orders them correctly.
+
+    `before_time` (HH:MM) is an EXCLUSIVE upper bound mirroring a rule's `latest`
+    (prefs treat `latest` as exclusive: a slot AT `before_time` is rejected). It
+    drops every candidate at/after the ceiling BEFORE selection, so it composes
+    with both the ranked-prefs and the `after_time` paths. For 2-hour mode BOTH
+    hours must fall inside `[after_time, before_time)` — because the ceiling is
+    applied to `avail` up front, a second hour at/after it is simply absent, and
+    the existing 'only one hour free → take the single' fallback handles it.
+    `before_time=None` = no ceiling = the exact prior behaviour (backward-compat).
+    Exclusive (not inclusive) so a `Tue 10:00-12:00` rule cannot book a court
+    that STARTS at 12:00 — same convention as `prefs.allows_time`."""
     if not slots:
         return []
     avail = [s for s in slots if s.available]
+    if before_time is not None:
+        # Apply the ceiling to the candidate pool ONCE, before any selection, so
+        # every downstream path (ranked prefs, after_time, and the 2-hour
+        # second-hour lookup) is filtered by it without special-casing each.
+        avail = [s for s in avail if s.time < before_time]
     two_hours = bool(target.courts and target.courts.two_hours)
     if after_time:
         candidate_times = sorted({s.time for s in avail if s.time >= after_time})
@@ -155,7 +172,7 @@ def _hold_one(page, prov, target, surface, target_date, court, time) -> str | No
 
 # ── court mode ────────────────────────────────────────────────────────────────
 def _run_court(page, ctx, prov, target, target_date, dry_run, want_time, tg,
-               after_time=None):
+               after_time=None, before_time=None):
     SHOTS.mkdir(exist_ok=True)
     notes: list[str] = []
     # Diagnosis carriers (see RunResult): getting INTO a grid at all is what
@@ -182,7 +199,8 @@ def _run_court(page, ctx, prov, target, target_date, dry_run, want_time, tg,
         log.info("drop.grid", surface=surface.label, date=target_date,
                  n_slots=len(slots), n_avail=len(avail_times),
                  avail_times=avail_times, all_times=all_times)
-        chosen = choose_court_slots(slots, target, want_time, after_time)
+        chosen = choose_court_slots(slots, target, want_time, after_time,
+                                    before_time)
         if not chosen:
             notes.append(f"{surface.label}: no preferred slot "
                          f"(avail: {', '.join(avail_times) or 'none'})")
@@ -343,6 +361,7 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
              epsilon: float = 0.15, retry_window_s: float = 90.0,
              retry_gap_s: float = 1.0,
              after_time: str | None = None,
+             before_time: str | None = None,
              prewarm_attempts: int = 3,
              prewarm_floor_s: float = 25.0,
              two_hours: bool | None = None) -> RunResult:
@@ -353,6 +372,9 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
 
     `after_time` (HH:MM) books the earliest available court at/after that time,
     any court — used by the dry-run rehearsal ('book any court after 19:00').
+    `before_time` (HH:MM) is the matching EXCLUSIVE upper bound (a rule's
+    `latest`): candidates at/after it are dropped before selection. None = no
+    ceiling (backward-compatible). Threaded straight through to `_run_court`.
 
     `prewarm_attempts` / `prewarm_floor_s` bound the cold-login retries: keep
     trying to arm until we succeed, run out of attempts, or get within
@@ -400,7 +422,7 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
                     skew = clock.server_skew()
                     log.info("drop.armed", date=target_date, drop_local=drop_local,
                              skew=round(skew, 3), after_time=after_time,
-                             attempt=attempt)
+                             before_time=before_time, attempt=attempt)
                     break
                 except Exception as e:
                     last_err = e
@@ -440,7 +462,8 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
                 attempts += 1
                 try:
                     result = _run_court(page, ctx, prov, target, target_date,
-                                        dry_run, want_time, quiet, after_time)
+                                        dry_run, want_time, quiet, after_time,
+                                        before_time)
                 except Exception as e:                       # overload / timeout
                     log.warn("drop.attempt_failed", n=attempts, err=str(e)[:120])
                     _time.sleep(retry_gap_s)
@@ -461,6 +484,7 @@ def run_drop(target_key: str = "paddington", dry_run: bool = True,
                     "ts": dt.datetime.now(ZoneInfo(target.drop.timezone)).isoformat(),
                     "target": target.key, "target_date": target_date,
                     "drop_local": drop_local, "after_time": after_time,
+                    "before_time": before_time,
                     "skew": round(skew, 3), "attempts": attempts,
                     "dry_run": dry_run, "secured": secured,
                     "chosen": (f"{chosen_slot.time} {chosen_slot.court}"
@@ -609,19 +633,31 @@ def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
                 handled = instant
                 continue
 
-            # Precedence: a SET prefs field wins; otherwise fall back to the CLI
-            # arg so no/default prefs behaves exactly as today. Per-day (§v2):
-            # pick the floor from the highest-priority rule matching this drop
-            # date, not a single global window — so `Tue 18:00- / Sat 10:00-`
-            # gives the drop the right earliest for whichever weekday D+7 is.
-            # `earliest_for_date` returns None (⇒ CLI fallback) when no rule
-            # sets a floor; "00:00" is a non-empty string so `or` is safe here.
-            eff_after = prefs.earliest_for_date(target_date) or after_time
-            # KNOWN LIMITATION: a rule's `latest` (upper ceiling) is NOT enforced
-            # by the drop — the single-date engine (run_drop/_run_court/
-            # choose_court_slots) has no max-time parameter, only `after_time`.
-            # Adding one is an engine change out of scope here; the catcher still
-            # enforces the ceiling. See the report / BACKLOG follow-up.
+            # Window source (§v2). A configured rule is the AUTHORITATIVE window
+            # for its day; the CLI `--after` is only a no-prefs fallback. So once
+            # ANY rule exists, take BOTH bounds from the highest-priority rule
+            # matching this drop date (day-matched — `allows_date` passed above),
+            # NOT from `--after`. This picks the right window per weekday, e.g.
+            # `Tue 18:00- / Sat 10:00-12:00` gives eff_after=18:00 on a Tue and
+            # 10:00–12:00 on a Sat.
+            #   - A rule may set no floor (ceiling-only `Sat -12:00`, or a bare
+            #     `<days> any`): use "00:00", NOT the CLI `--after`. Falling back
+            #     to `--after 19:00` there would INVERT the band ([19:00,12:00) is
+            #     empty) and silently book nothing (critic S1). "00:00" ⇒ "earliest
+            #     available up to the ceiling", which is what the rule means.
+            #   - `latest` is an EXCLUSIVE upper bound (matches prefs `allows_time`);
+            #     it reaches the single-date engine as `before_time` (run_drop →
+            #     _run_court → choose_court_slots). None ⇒ no ceiling.
+            #   - Multi-rule-same-weekday: the drop pursues only the top matching
+            #     rule's window (the catcher considers ALL rules). Safe (drop ⊆
+            #     catcher) but not full parity — see BACKLOG §2.
+            # Empty rules (no prefs, or `/rules clear`) keep today's CLI behaviour.
+            if prefs.rules:
+                eff_after = prefs.earliest_for_date(target_date) or "00:00"
+                eff_before = prefs.latest_for_date(target_date)
+            else:
+                eff_after = after_time
+                eff_before = None
             # slot_length_hours: only force two-hours ON (==2). ==1 is the default
             # and indistinguishable from "unset", so forcing it OFF could override
             # the target's own config on a default read — backward-compat forbids.
@@ -637,9 +673,11 @@ def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
 
             log.info("drop_loop.fire", drop_date=target_date, dry_run=not live,
                      mode=("LIVE" if live else "DRY-RUN"), after_time=eff_after,
-                     two_hours=bool(eff_two_hours), degraded=list(prefs.degraded))
+                     before_time=eff_before, two_hours=bool(eff_two_hours),
+                     degraded=list(prefs.degraded))
             run_drop(target_key=target_key, dry_run=not live, headless=headless,
                      want_time=want_time, after_time=eff_after,
+                     before_time=eff_before,
                      two_hours=eff_two_hours, notify=notify, epsilon=epsilon,
                      retry_window_s=retry_window_s, retry_gap_s=retry_gap_s)
         except Exception as e:                       # never let one night kill the loop

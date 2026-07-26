@@ -51,22 +51,41 @@ def _esc(s: str) -> str:
     return html.escape(str(s), quote=False)
 CONFIRM_WORD = "CONFIRM"
 
+# A COMPLETE, grouped one-line-per-command reference (API_SPEC §2). Sent with
+# parse_mode=HTML, so any literal `&`/`<`/`>` must be pre-escaped here — the '&'
+# in "Where & when" is written `&amp;`; every command example uses concrete
+# values (no `<...>` placeholders) so nothing else needs escaping and it stays
+# scannable. Well under Telegram's 4096-char limit (a test asserts both).
 HELP = (
-    "🎾 <b>Tennis-Bot</b> — config commands\n"
-    "/status — mode + active settings\n"
-    "/centres paddington westway — where to look\n"
-    "/days Tue Thu · /days any — weekdays (single-rule shorthand)\n"
-    "/window 18:00-22:00 · /window 18:00- · /window any — time window\n"
-    "/rules — list booking rules (priority order)\n"
-    "/rule Tue Thu 18:00- · /rule Sat 10:00-15:00 · /rule Sun any — add a rule\n"
-    "/rule del 2 · /rules clear — remove rule(s)\n"
-    "/length 1|2 — hours per booking\n"
-    "/cap 3 · /cap 0 — max PAID bookings per week (0 pauses)\n"
-    "/holds 5 · /holds 0 — max concurrent UNPAID holds (0 pauses)\n"
-    "/catcher on|off — arm/disarm the cancellation catcher (on asks to confirm)\n"
-    "/drop on|off — arm/disarm the midnight drop (on asks to confirm)\n"
-    "/live off — panic: turn BOTH off now · /live on — arm both\n"
-    "/help — this list"
+    "🎾 <b>Tennis-Bot</b> — command reference\n"
+    "\n"
+    "<b>See</b>\n"
+    "/status — current mode + all active settings\n"
+    "/help — this reference\n"
+    "\n"
+    "<b>Where &amp; when</b>\n"
+    "/centres paddington westway — which centre(s) to search\n"
+    "/rules — list your booking rules (priority order, 1 = highest)\n"
+    "/rule Tue Thu 18:00- — add a rule "
+    "(window: 18:00- · 10:00-15:00 · -22:00 · any)\n"
+    "/rule del 2 — delete rule #2 (numbers shown by /rules)\n"
+    "/rule move 3 1 — re-prioritise: move rule #3 to position #1\n"
+    "/rules clear — delete every rule (back to any day, any time)\n"
+    "/days Tue Thu · /days any — sole-rule shorthand for weekdays "
+    "(rejected with ≥2 rules — use /rule)\n"
+    "/window 18:00-22:00 · /window any — sole-rule shorthand for the time "
+    "window (rejected with ≥2 rules)\n"
+    "\n"
+    "<b>Limits</b>\n"
+    "/length 1|2 — hours per booking (1 or 2 consecutive)\n"
+    "/cap 3 · /cap 0 — max PAID courts per week (0 pauses booking)\n"
+    "/holds 5 · /holds 0 — max concurrent UNPAID holds (0 pauses booking)\n"
+    "\n"
+    "<b>Go live</b>\n"
+    "/catcher on|off — arm/disarm the cancellation catcher "
+    "(on → CONFIRM within 2 min)\n"
+    "/drop on|off — arm/disarm the midnight drop (on → CONFIRM within 2 min)\n"
+    "/live off — panic: turn BOTH bookers off now · /live on — arm both"
 )
 
 
@@ -405,10 +424,11 @@ def _edit_sole_rule(prefs: Prefs, cmd: str, **changes) -> Prefs:
 
 
 def _rule_command(args: list, prefs: Prefs) -> tuple[Prefs, str]:
-    """`/rule <days...> <window>` (append), or `/rule del <n>` (remove)."""
+    """`/rule <days...> <window>` (append), `/rule del <n>` (remove), or
+    `/rule move <from> <to>` (re-prioritise in place)."""
     if not args:
         raise PrefsError("Usage: /rule Tue Thu 18:00-  ·  /rule Sat 10:00-15:00 "
-                         "·  /rule del 2")
+                         "·  /rule del 2  ·  /rule move 3 1")
     if args[0].lower() == "del":
         # ASCII digits only (see /holds): isdecimal admits non-ASCII digits.
         if len(args) != 2 or not (args[1].isascii() and args[1].isdigit()):
@@ -419,6 +439,8 @@ def _rule_command(args: list, prefs: Prefs) -> tuple[Prefs, str]:
                              f"rule(s). See /rules.")
         new_rules = prefs.rules[:n - 1] + prefs.rules[n:]
         return _with_rules(prefs, new_rules), f"Removed rule #{n}."
+    if args[0].lower() == "move":
+        return _rule_move(args[1:], prefs)
     # Append: the LAST token is the window, everything before it is the day list.
     *day_toks, window_tok = args
     earliest, latest = _parse_window([window_tok])
@@ -428,6 +450,41 @@ def _rule_command(args: list, prefs: Prefs) -> tuple[Prefs, str]:
     return candidate, f"Added rule #{len(candidate.rules)}: {rule_text(rule)}"
 
 
+def _rule_move(args: list, prefs: Prefs) -> tuple[Prefs, str]:
+    """`/rule move <from> <to>` — remove the rule at 1-based `<from>` and
+    re-insert it at `<to>`, re-prioritising WITHOUT losing any rule. `<from> ==
+    <to>` is a no-op success. Positions are validated the same way as `/rule
+    del`/`/holds` (ASCII digits, `isascii() and isdigit()`), so '-1' fails as
+    non-digit and '0'/'>len' fail the range check with a helpful message."""
+    n = len(prefs.rules)
+    if n < 2:
+        # Reordering needs at least two rules to have any meaning; say so plainly
+        # rather than emitting a range error the owner can't act on.
+        raise PrefsError(f"Nothing to reorder — you have {n} rule(s).")
+    if len(args) != 2 or not all(a.isascii() and a.isdigit() for a in args):
+        raise PrefsError("Usage: /rule move <from> <to>  (positions from "
+                         "/rules, e.g. /rule move 3 1).")
+    frm, to = int(args[0]), int(args[1])
+    if not (1 <= frm <= n) or not (1 <= to <= n):
+        raise PrefsError(f"You have {n} rules; positions must be 1–{n}.")
+    if frm == to:
+        return prefs, (f"Rule {frm} already at position {to} — no change:\n"
+                       + "\n".join(_rules_list(prefs)))
+    rules = list(prefs.rules)
+    moved = rules.pop(frm - 1)
+    rules.insert(to - 1, moved)
+    candidate = _with_rules(prefs, tuple(rules))
+    return candidate, (f"Moved rule {frm} → {to}:\n"
+                       + "\n".join(_rules_list(candidate)))
+
+
+def _rules_list(prefs: Prefs) -> list:
+    """The numbered "1. Tue,Thu 18:00–any" lines for the current rules (no
+    header, no summary) — shared by `/rules` and `/rule move`'s read-back so the
+    two renderings never drift apart."""
+    return [f"{i}. {_esc(rule_text(r))}" for i, r in enumerate(prefs.rules, 1)]
+
+
 def _rules_text(prefs: Prefs) -> str:
     """The `/rules` read-back: the ordered rule list + a legend, or a note that
     booking is unrestricted when there are none."""
@@ -435,8 +492,7 @@ def _rules_text(prefs: Prefs) -> str:
         return ("No booking rules — any day, any time.\n"
                 "Add one with e.g. /rule Tue Thu 18:00-\n" + prefs.summary())
     lines = ["📋 <b>Rules</b> (1 = highest priority):"]
-    for i, r in enumerate(prefs.rules, 1):
-        lines.append(f"{i}. {_esc(rule_text(r))}")
+    lines += _rules_list(prefs)
     lines.append(prefs.summary())
     return "\n".join(lines)
 
@@ -487,13 +543,10 @@ def _status_text(prefs: Prefs, paid_this_week: int | None,
         f"Next scan: {next_scan or 'unknown'}",
         f"Updated: {prefs.updated_at or 'never'} ({prefs.updated_by})",
     ]
-    # W2: the midnight drop engine has no upper-time bound (only a floor), so a
-    # rule's `latest` ceiling is enforced by the catcher but NOT the drop. Warn
-    # only when it actually matters — the drop is armed AND some rule sets a
-    # ceiling. (A proper `before_time` engine param is on the BACKLOG.)
-    if prefs.drop_live and any(r.latest is not None for r in prefs.rules):
-        lines.append("⚠️ Drop enforces only the window FLOOR (earliest), not the "
-                     "ceiling (latest) — the catcher enforces both.")
+    # (Historically warned here that the drop enforced only a rule's FLOOR, not
+    # its ceiling. The drop now enforces BOTH — `before_time` mirrors the floor
+    # through run_drop → _run_court → choose_court_slots — so the warning is gone;
+    # leaving it would be a stale contradiction of the code.)
     return "\n".join(lines)
 
 

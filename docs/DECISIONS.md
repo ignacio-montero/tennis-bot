@@ -265,3 +265,28 @@ contract in [API_SPEC.md §1.2a/§1.6/§2.3](API_SPEC.md), design in
   at 0 pauses booking. *Rejected:* folding holds into the weekly cap (conflates
   spend-this-week with parked-now; a single number can't pause one without the
   other).
+
+## Drop enforces `latest`, rule reorder, rich `/help` (2026-07-27, v0.6.0)
+
+- **Drop now enforces a rule's `latest` ceiling** — the catcher honoured both
+  ends of a rule's window but the midnight drop honoured only the floor. Added a
+  `before_time` (EXCLUSIVE upper bound, matching prefs `latest`) mirroring
+  `after_time` through the single-date engine, filtered ONCE at the candidate
+  pool so it composes with the ranked-prefs, `after_time`, and two-consecutive-
+  hours paths without a per-branch filter. *Rejected:* filtering in each
+  selection branch (three chances to forget the 2-hour second-hour case).
+- **A configured rule is authoritative for the drop's window** — once any rule
+  matches the drop's weekday, BOTH bounds come from that rule; the CLI `--after`
+  is only a no-prefs fallback. A ceiling-only rule (`Sat -12:00`) uses a 00:00
+  floor, not `--after 19:00` — otherwise the band inverts (`[19:00, 12:00)` is
+  empty) and the drop silently books nothing (critic S1). Empty rules keep the
+  exact CLI-driven behaviour. *Known scope:* the drop pursues only the highest-
+  priority rule per weekday; the catcher considers all. Safe (drop ⊆ catcher);
+  fuller union-of-same-day-rules fix is in BACKLOG §2.
+- **`/rule move <from> <to>`** — rule priority is list order, so reordering
+  needed a first-class command (was: `/rules clear` + retype). Pop-then-insert
+  at the 1-based destination; `from==to` no-op; `<2 rules` rejected.
+- **`/help` lists every command with a one-line definition** — the surface grew
+  past the old terse subset; the help is now the discoverable source of truth,
+  grouped See / Where &amp; when / Limits / Go live, static (no user text → no
+  escaping risk), under Telegram's 4096-char limit.
