@@ -170,14 +170,20 @@ class Prefs:
             _bad("window", f"{times['earliest']}-{times['latest']}")
             times["earliest"] = times["latest"] = None
 
-        # A newer schema we don't understand: fields may have changed meaning,
-        # so treat the whole document as degraded rather than guessing.
+        # Version handling. A MISSING version is not an error — it defaults
+        # silently like every other absent field (a partial/hand-edited doc must
+        # stay usable, §1.4). Only a version we can't honour degrades the doc:
+        #  - a NEWER schema (> ours) may have changed field meanings — refuse to
+        #    guess, so force dry-run.
+        #  - a malformed version (non-int / bool) is corruption.
         version = raw.get("version")
-        if not isinstance(version, int) or isinstance(version, bool):
-            _bad("version", version)
+        if version is None:
+            version = SCHEMA_VERSION                      # absent ⇒ default, OK
+        elif not isinstance(version, int) or isinstance(version, bool):
+            _bad("version", version)                     # malformed ⇒ degraded
             version = SCHEMA_VERSION
         elif version > SCHEMA_VERSION:
-            _bad("version", version)
+            _bad("version", version)                     # newer ⇒ degraded
 
         degraded = tuple(dict.fromkeys(bad_fields))       # de-dup, keep order
         if degraded:

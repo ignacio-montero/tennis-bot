@@ -572,3 +572,20 @@ def test_validate_also_rejects_bool_slot_length():
         with pytest.raises(PrefsError):
             validate(replace(Prefs.defaults(), slot_length_hours=bad),
                      ["paddington"])
+
+
+def test_missing_version_defaults_silently_not_degraded(tmp_path):
+    # A hand-edited/partial prefs.json without a `version` key must default the
+    # version like any other absent field — NOT mark the doc degraded (which
+    # would force dry-run). Only a NEWER-than-ours or malformed version degrades.
+    # (Regression: a missing version briefly degraded every partial doc, so a
+    # hand-edited config with live:true was silently stuck in dry-run.)
+    p = load_prefs(write(tmp_path, '{"live": true, "earliest": "18:00"}'))
+    assert p.degraded == () and p.live is True and p.version == 1
+
+
+def test_newer_schema_version_degrades_forcing_dry_run(tmp_path):
+    # A version we don't understand may have changed field meanings — refuse to
+    # guess, force dry-run (the safe direction for an unknown schema).
+    p = load_prefs(write(tmp_path, '{"version": 99, "live": true}'))
+    assert p.live is False and "version" in p.degraded
