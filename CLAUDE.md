@@ -48,11 +48,11 @@ PYTHONPATH=src .venv/bin/python -m tennisbot catch-loop --max-cycles 1 --no-noti
 Targets/surfaces/activities are configured in `config/targets.yaml`.
 `--time HH:MM` overrides ranked prefs (books that time, any court).
 
-## Cancellation catcher — DEPLOYED on the homelab, dry-run ✅ (2026-07-26, v0.4.0)
+## Cancellation catcher — DEPLOYED on the homelab, dry-run ✅ (2026-07-27, v0.5.0 schema v2)
 `tennisbot catch-loop` (`catcher.py`) polls D0–D+7 every 30 min for freed courts
 matching the shared `prefs.json` and books them via the EXISTING single-date
 engine (re-search seam, §8.2 — no click-through). Ships **dry-run**; goes live
-only if `prefs.live`. Pure logic (week-grid parser, matcher, weekly cap,
+only if `prefs.catcher_live`. Pure logic (week-grid parser, matcher, weekly cap,
 lapsed-hold §4.4, `plan_cycle`) is unit-tested offline; the browser lives behind
 an injectable `_PlaywrightScanner`. Inherits the drop's blackouts (§8.4). State
 (per-slot memory + heartbeat + cap-notice) in `$CATCHER_STATE_DIR/catcher-state.json`.
@@ -66,6 +66,22 @@ an injectable `_PlaywrightScanner`. Inherits the drop's blackouts (§8.4). State
   (Chosen the separate-container transport over in-process for a lower-risk
   unattended deploy; in-process — which would also let `/status` report
   `paid_this_week`/`next_scan` instead of "unknown" — is a future refinement.)
+- **Schema v2 (2026-07-27):** prefs is an ordered list of per-day **rules**
+  (`Rule(days, earliest, latest)`, index 0 = highest priority — `/rule`, `/rules`,
+  `/rule del`, `/rules clear`; `/days`+`/window` are a sole-rule shorthand). A
+  **`max_holds`** ceiling (default 5) caps concurrent UNPAID holds, separate from
+  the weekly PAID cap (3). The old single `live` split into independent
+  **`catcher_live` / `drop_live`** (`/catcher on|off`, `/drop on|off`, 2-min
+  CONFIRM; `/live off` = panic-both-off). v1 prefs auto-migrate on read (flat
+  window → one rule; `live:true` → drop-only). `degraded` still forces BOTH off.
+  Money-safety: positive tennis-court ID is confined to the PAID cap; the
+  idempotency guard + hold ceiling keep the SAFE negative rule (over-count →
+  skip, never a re-book storm).
+- ⚠️ **PRE-LIVE GATE before `/catcher on`:** the paid-cap precision assumes a
+  held court's Manage-Bookings row text contains a surface token (e.g.
+  `Tennis - Synth`). Confirm that against a REAL held-court row on the box first;
+  until then the code fails safe (empty token set → negative rule). See
+  BACKLOG §4.
 - ⚠️ **Two deploy gotchas** (see homelab decisions 2026-07-26): `catch-loop`
   takes NO `--centre` (centre comes from prefs); and a fresh state volume mounts
   root-owned but the image runs as `pwuser` (1001), so `/data/catch` needed a

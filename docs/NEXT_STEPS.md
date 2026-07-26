@@ -1,25 +1,33 @@
 # Tennis-Bot — Status & next steps
 
-_Last updated: 2026-07-22. For how to run it and the operational gotchas see
+_Last updated: 2026-07-27. For how to run it and the operational gotchas see
 [../CLAUDE.md](../CLAUDE.md); for future ideas see [BACKLOG.md](BACKLOG.md)._
 
-## ⏭️ UPDATE 2026-07-22 — trigger switched to a self-scheduling sidecar
+## ⏭️ CURRENT STATE 2026-07-27 — schema v2 deployed (all dry-run)
 
-The cron-fired rehearsal below is **superseded**. The nightly booker is now a
-long-running `drop-loop` **sidecar** (deploys like watchd; no host crontab, no
-Docker socket, and TZ-aware so no DST edits). **All the booking logic from the
-rehearsal is kept** — only the trigger changed (see DECISIONS.md 2026-07-22).
-Built on branches `claude/drop-sidecar-trigger` (both tennis-bot + homelab),
-not yet pushed. Handover (Mac/admin session):
-1. Push both branches + merge; `git tag v0.3.0 && git push origin v0.3.0` → CI
-   builds `…/tennisbot-watchd:0.3.0`.
-2. Deploy: create the drop `.env` on the server, then `git pull &&
-   docker compose pull tennisbot-drop tennisbot-watchd && docker compose up -d
-   tennisbot-drop tennisbot-watchd`. Runbook: [../deploy/docker/DROP.md](../deploy/docker/DROP.md).
-3. To retire the old path, remove nacho's `tennisbot-drop` crontab line if it
-   was ever installed (`crontab -e`).
-Still dry-run (`--after 19:00`); watch a night, then add `--live` to the compose
-command. The rehearsal notes below stay as booking-behaviour reference.
+All three tennisbot services (`tennisbot-drop`, `tennisbot-catch`,
+`tennisbot-prefs`) run on the homelab at image **`:0.5.0`**, healthy, **DRY-RUN**
+(both live flags off). One shared Telegram-set `prefs.json` governs both bookers.
+Schema v2 adds per-day priority **rules**, a **`max_holds`** concurrent-hold
+ceiling, and split **`catcher_live`/`drop_live`** flags (see CLAUDE.md catcher
+section + DECISIONS.md 2026-07-26). The on-disk config is still `version:1` and
+auto-migrates on read; it rewrites as v2 on the next Telegram edit.
+
+**Next steps, in order:**
+1. **PRE-LIVE GATE — verify Manage-Bookings court text.** Before `/catcher on`,
+   confirm a real held-court row's text contains a surface token (e.g.
+   `Tennis - Synth`); the paid-cap precision depends on it (fails safe until
+   verified). BACKLOG §4. This is the one blocker between here and live.
+2. **Configure real preferences** from Telegram (`/rule …` per-day windows,
+   `/holds`, `/cap`) once you want something other than the seed "any day ≥19:00".
+3. **Go live deliberately, per job:** `/drop on` and/or `/catcher on` (each a
+   2-min CONFIRM). Watch a night/cycle before trusting it unattended.
+4. **Backlog niceties** (non-blocking): drop `before_time` so it honours a rule's
+   `latest` ceiling (today only the catcher does); rule REORDER command; add
+   `/data/catch` to the Dockerfile (retire the one-time chown); in-process
+   transport so `/status` shows real `paid_this_week`/`next_scan`.
+
+The rehearsal notes below stay as booking-behaviour reference.
 
 ## What works today ✅
 
