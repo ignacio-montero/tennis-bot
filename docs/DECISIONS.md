@@ -290,3 +290,56 @@ contract in [API_SPEC.md §1.2a/§1.6/§2.3](API_SPEC.md), design in
   past the old terse subset; the help is now the discoverable source of truth,
   grouped See / Where &amp; when / Limits / Go live, static (no user text → no
   escaping risk), under Telegram's 4096-char limit.
+
+## Calendar-driven booking — Architect decisions (2026-07-27)
+
+Scoped in [PRD-calendar-integration.md](PRD-calendar-integration.md); design in
+[ARCHITECTURE.md](ARCHITECTURE.md) §9. Read-only MVP (part 1); write-back (part 2)
+deferred.
+
+- **`.ics` subscription URL over CalDAV — least privilege wins.** The owner drives
+  booking from a dedicated iCloud "Tennis" calendar. Read options were a public
+  **`.ics` subscription link** (read-only, no login, exposes only *this one*
+  calendar) vs **CalDAV** (live + read/write, but an app-specific password grants
+  read/write to the owner's *entire* iCloud calendar set). Chose `.ics`. *Why:*
+  the owner explicitly did not want the bot able to touch all their calendars, and
+  the Tennis calendar is low-sensitivity — least privilege beats the "build once
+  for write" convenience when write is "someday, no rush". *Rejected:* CalDAV-now
+  (broadest secret on an always-on box, for a write feature we don't need yet).
+  *Accepted costs:* read-only forever on this path (part 2 needs a separate
+  authenticated door) and Apple's publish-cache lag (tolerable — blocks are placed
+  well ahead of booking).
+- **A `WindowSource` (Strategy pattern), not a second booking engine.** A calendar
+  event == a date-scoped `Rule`, so `rules` and `calendar` are two producers of the
+  same `(date, earliest, latest, priority)` windows behind one interface; the
+  matcher/cap/ceiling/live-gates are untouched. `prefs.mode` (`"rules"` |
+  `"calendar"`, default `"rules"`) selects the source. *Why:* keeps the feature a
+  single seam instead of a parallel code path, and makes "calendar events are just
+  dynamic rules" literally true. *Rejected:* a bespoke calendar booking path
+  (duplicates the cap/hold/live logic — divergence risk).
+- **Secret vs config split preserved.** Calendar URL → untracked `.env`
+  (`TENNISBOT_CALENDAR_ICS_URL`); it's a "secret link" and prefs.json is
+  echoed/logged. `mode` → prefs.json (Telegram-set). *Rejected:* URL in prefs
+  (would leak via `/status`/logs).
+- **All-day event = "any time that day"** (full-day window), matching a `<day>
+  any` rule. *(owner decision)*
+- **Fail-safe = book nothing, fail LOUD.** Read-OK-empty is silent; read-FAILED
+  (network/parse/URL-unset) books nothing AND raises a rate-limited Telegram alert
+  (≤ once/day), never falling back to stale rules or "book everything". *Why:* an
+  unreadable intent must pause booking loudly, same posture as degraded-prefs →
+  dry-run. *(owner decision: "loud fail")*
+- **Weekend-first priority in calendar mode** — calendar events carry no
+  owner-authored order (unlike rules' list index), so the ranking is `(weekend
+  Fri/Sat/Sun first, then earliest date, then earliest time)`. Fixed default for
+  MVP. *(owner decision)*
+- **Untrusted-input hardening (built 2026-07-27, from the critic pass).** The
+  `.ics` is external network data, and a `try/except` bounds *exceptions*, not
+  *time or memory*. So we PREVENT the non-raising hazards rather than catch them:
+  reject sub-daily `RRULE` before `dateutil.between()` expands it (else a
+  `FREQ=SECONDLY` recurrence hangs the loop); stream the fetch with a byte cap
+  (else a giant body OOM→SIGKILL→crash-loops the container) and a wall-clock
+  deadline (else a slow-drip stalls a cycle); redact the secret URL in a
+  catch-all. *Rejected:* relying on the existing per-cycle try/except (a hang/OOM
+  never reaches it). A pathological event fails the read LOUD; a merely-malformed
+  one is skipped — the `except CalendarReadError: raise` before the generic
+  `except` keeps the loud signal from degrading into silent skip.

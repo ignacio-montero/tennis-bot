@@ -146,9 +146,22 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   only when **≥2 people are free at the same time**. Needs: per-user availability
   capture, an overlap/matching algorithm, and clear rules for who's "in" on a
   given booking. Builds on #4.
-- 🟡 **Calendar integration (long term)** *(user idea #6)* — connect my calendar
-  (Google/iCal) and book courts around my actual free/busy times automatically.
-  Combine with #4/#5 for fully hands-off, schedule-aware booking.
+- ✅ **Calendar-driven booking (iCloud "Tennis" calendar) — part 1 (read-only)**
+  *(user idea #6, built 2026-07-27, v0.7.0)* — PRD
+  [PRD-calendar-integration.md](PRD-calendar-integration.md); design ARCH §9. A
+  dedicated calendar where each event = a booking request (time range = search
+  window); `/mode calendar` ⊕ `/mode rules`; weekend-first under the cap;
+  loud fail-safe (unreadable ⇒ books nothing). Read-only via a public `.ics`
+  subscription URL (CalDAV rejected — least privilege). Hardened against
+  untrusted-input hangs/OOM (ARCH §9.9). **Pre-live gate:** verify a real iCloud
+  `.ics` parses (fixture-tested only so far).
+- 🟡 **Calendar part 2 — write booked courts back** — deferred; needs an
+  authenticated iCloud write path (CalDAV + app-specific password), a different
+  trust boundary than the read-only URL.
+- 🟡 **Calendar reader — RDATE + recurring multi-day all-day** — two safe-direction
+  (under-booking) gaps in the MVP reader: `RDATE`-added occurrences are ignored,
+  and a *recurring* multi-day all-day event opens only one day per occurrence.
+  Neither over-books; expand if a real calendar needs them.
 
 ## 9. Housekeeping
 - 🟡 **Rotate secrets** — Telegram token ✅ rotated; **<removed>**

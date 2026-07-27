@@ -48,6 +48,7 @@ atomic temp-file-rename on write.
   "max_holds": 5,                   // max concurrent UNPAID holds (0 = pause)
   "catcher_live": false,            // arm the cancellation catcher (real holds)
   "drop_live": false,               // arm the midnight drop (real holds)
+  "mode": "rules",                  // "rules" | "calendar" — which WindowSource drives booking (ARCH §9)
   "updated_at": "2026-07-26T09:00:00+01:00",  // ISO; set by handler on every write
   "updated_by": "telegram"          // provenance: "telegram" | "default"
 }
@@ -223,6 +224,16 @@ ports"), run inside the catcher process.
 | `/length` | `/length 2` | `slot_length_hours` |
 | `/cap` | `/cap 3` · `/cap 0` (pause booking) | `weekly_cap` (paid/week) |
 | `/holds` | `/holds 5` · `/holds 0` (pause booking) | `max_holds` (concurrent unpaid holds) |
+| `/mode` | `/mode calendar` · `/mode rules` · `/mode` (show) | `mode` — which source drives booking (ARCH §9) |
+
+**`/mode` — rules ⊕ calendar (mutually exclusive).** `/mode calendar` makes the
+iCloud "Tennis" calendar the window source (`/rule`s lie dormant); `/mode rules`
+(the default) restores rule-driven booking (the calendar is not read). No CONFIRM
+handshake — switching source doesn't create live holds by itself (that stays the
+`/catcher on`·`/drop on` gate). The **calendar URL is NOT settable here** — it is a
+secret in the box's `.env` (`TENNISBOT_CALENDAR_ICS_URL`, ARCH §9.3); `/mode
+calendar` should warn if that env is unset (the bookers will otherwise loud-fail,
+§9.6). `/status` shows the active mode.
 
 **Window grammar** (used by `/window` and the trailing token of `/rule`):
 `18:00-22:00` (both bounds) · `18:00-` (floor only) · `-22:00` (ceiling only) ·
@@ -279,6 +290,7 @@ keeps the owner's muscle-memory one-shot arm/disarm. See ARCHITECTURE §8.8.
 | Error | which job, one-line reason (reuses the `never_opened`/`sold_out`/`prefs_too_narrow` diagnosis vocabulary). |
 | Cap reached | once per week when the PAID weekly cap blocks a booking. |
 | Hold ceiling reached | once per day when `max_holds` blocks a booking (unpaid holds ceiling hit). |
+| Calendar unreadable (calendar mode) | **LOUD** — book nothing; fires on entering the failure state, ≤ once/day while it persists (ARCH §9.6). Empty calendar (read OK) is silent. |
 | Drop-time regression | the §8.3 verdict (moved / broken) with the D+7 evidence. |
 | Daily heartbeat (~09:00) | "alive", **mode**, config summary, week's paid-count, open holds. |
 | Empty poll cycle | *nothing* (silence by design). |

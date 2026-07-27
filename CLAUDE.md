@@ -82,6 +82,14 @@ an injectable `_PlaywrightScanner`. Inherits the drop's blackouts (§8.4). State
   `Tennis - Synth`). Confirm that against a REAL held-court row on the box first;
   until then the code fails safe (empty token set → negative rule). See
   BACKLOG §4.
+- **Calendar-driven booking (v0.7.0, ARCH §9):** `/mode calendar` ⊕ `/mode rules`
+  (default rules — no behaviour change). In calendar mode a dedicated iCloud
+  "Tennis" calendar drives booking: each event = a request, its time range = the
+  window (`calendar_source.py` reads a public `.ics` subscription URL from
+  `TENNISBOT_CALENDAR_ICS_URL` in `.env`; `window_source.py` is the rules/calendar
+  Strategy seam both bookers consume). Weekend-first under the cap; unreadable
+  calendar ⇒ books nothing + LOUD alert. **Pre-live gate:** verify a REAL iCloud
+  `.ics` parses (fixture-tested only). Part 2 (write-back) deferred.
 - ⚠️ **Two deploy gotchas** (see homelab decisions 2026-07-26): `catch-loop`
   takes NO `--centre` (centre comes from prefs); and a fresh state volume mounts
   root-owned but the image runs as `pwuser` (1001), so `/data/catch` needed a

@@ -23,14 +23,17 @@ from __future__ import annotations
 
 import datetime as dt
 import html
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable
 
 import structlog
 
-from .prefs import (LONDON, Prefs, PrefsError, Rule, known_centres, load_prefs,
-                    parse_days, parse_time, rule_text, save_prefs, validate)
+from .calendar_source import CALENDAR_ICS_URL_ENV
+from .prefs import (LONDON, MODES, Prefs, PrefsError, Rule, known_centres,
+                    load_prefs, parse_days, parse_time, rule_text, save_prefs,
+                    validate)
 
 log = structlog.get_logger()
 
@@ -76,6 +79,10 @@ HELP = (
     "/window 18:00-22:00 · /window any — sole-rule shorthand for the time "
     "window (rejected with ≥2 rules)\n"
     "\n"
+    "<b>Source</b>\n"
+    "/mode rules · /mode calendar · /mode — which source drives booking "
+    "(rules = /rule; calendar = your iCloud Tennis calendar)\n"
+    "\n"
     "<b>Limits</b>\n"
     "/length 1|2 — hours per booking (1 or 2 consecutive)\n"
     "/cap 3 · /cap 0 — max PAID courts per week (0 pauses booking)\n"
@@ -119,9 +126,14 @@ def handle_message(text: str, chat_id, prefs: Prefs, *, owner_chat_id,
                    pending_confirm_target: str | None = None,
                    valid_centres: Iterable[str] | None = None,
                    paid_this_week: int | None = None,
-                   next_scan: str | None = None) -> CommandResult:
+                   next_scan: str | None = None,
+                   calendar_configured: bool | None = None) -> CommandResult:
     """Apply one inbound Telegram message. Pure: no I/O, no clock unless you
-    omit `now`. Returns the *candidate* new prefs — the caller persists them."""
+    omit `now`. Returns the *candidate* new prefs — the caller persists them.
+
+    `calendar_configured` (whether `TENNISBOT_CALENDAR_ICS_URL` is set on the box)
+    is injected — the handler stays pure — so `/mode calendar` can WARN when the
+    secret is missing (§2.2). `None` = unknown ⇒ no warning."""
     now = now or dt.datetime.now(LONDON)
     if now.tzinfo is None:
         # A naive `now` would raise TypeError against the aware deadline below,
@@ -207,7 +219,8 @@ def handle_message(text: str, chat_id, prefs: Prefs, *, owner_chat_id,
     try:
         result = _dispatch(cmd, args, prefs, now=now,
                            valid_centres=valid_centres,
-                           paid_this_week=paid_this_week, next_scan=next_scan)
+                           paid_this_week=paid_this_week, next_scan=next_scan,
+                           calendar_configured=calendar_configured)
     except PrefsError as e:
         # Rejected: no new prefs are returned, so the caller never saves and
         # the previous config stays intact (PRD §7).
@@ -240,7 +253,8 @@ def _apply_live_target(prefs: Prefs, target: str) -> tuple[Prefs, str]:
 def _dispatch(cmd: str, args: list, prefs: Prefs, *, now: dt.datetime,
               valid_centres: Iterable[str] | None,
               paid_this_week: int | None,
-              next_scan: str | None) -> CommandResult:
+              next_scan: str | None,
+              calendar_configured: bool | None = None) -> CommandResult:
     if cmd == "/help" or cmd == "/start":
         return CommandResult(reply=HELP)
 
@@ -257,6 +271,9 @@ def _dispatch(cmd: str, args: list, prefs: Prefs, *, now: dt.datetime,
 
     if cmd == "/rules" and not (args and args[0].lower() == "clear"):
         return CommandResult(reply=_rules_text(prefs))   # read-only list
+
+    if cmd == "/mode":
+        return _mode(args, prefs, calendar_configured)
 
     # -- the config setters (§2.2) -----------------------------------------
     if cmd == "/centres":
@@ -398,6 +415,39 @@ def _live(args: list, prefs: Prefs, now: dt.datetime) -> CommandResult:
     raise PrefsError("Usage: /live on (arm both)  ·  /live off (panic: both off)")
 
 
+def _mode(args: list, prefs: Prefs,
+          calendar_configured: bool | None) -> CommandResult:
+    """`/mode` (show) · `/mode rules` · `/mode calendar`. No CONFIRM handshake —
+    switching the booking SOURCE creates no holds by itself (arming real holds
+    stays behind /catcher on · /drop on, §2.2). Any other arg is rejected."""
+    if not args:
+        return CommandResult(reply=_mode_text(prefs))          # read-only show
+    arg = args[0].lower()
+    if arg not in MODES:
+        raise PrefsError("Usage: /mode calendar  ·  /mode rules  ·  /mode "
+                         "(show current).")
+    candidate = replace(prefs, mode=arg)
+    validate(candidate)
+    warn = ""
+    if arg == "calendar" and calendar_configured is False:
+        # Nice-to-have (§2.2): the URL is a box secret set in .env, not here, so
+        # warn but don't block — until it's set the bookers loud-fail (§9.6).
+        warn = (f"\n⚠️ {CALENDAR_ICS_URL_ENV} is not set on the box — until it "
+                f"is, the bookers will book NOTHING and alert.")
+    return CommandResult(prefs=candidate,
+                         reply=f"✅ Booking source: {arg}{warn}\n"
+                               + candidate.summary())
+
+
+def _mode_text(prefs: Prefs) -> str:
+    """The read-only `/mode` display."""
+    if prefs.mode == "calendar":
+        return ("Booking source: 📅 <b>calendar</b> (iCloud Tennis calendar; "
+                "/rules dormant).\n" + prefs.summary())
+    return ("Booking source: <b>rules</b> (/rule-driven; the calendar is not "
+            "read).\n" + prefs.summary())
+
+
 def _with_rules(prefs: Prefs, rules) -> Prefs:
     """Set `rules` and clear the flat mirror in one step. Necessary because
     `dataclasses.replace` copies the OLD flat `days`/`earliest`/`latest` forward,
@@ -522,7 +572,9 @@ def _status_text(prefs: Prefs, paid_this_week: int | None,
     if paid_this_week is not None:
         cap = f"{paid_this_week}/{prefs.weekly_cap} paid this week"
     lines = [
-        f"{icon} <b>{prefs.mode}</b>",
+        f"{icon} <b>{prefs.live_state}</b>",
+        ("Source: 📅 calendar (iCloud)" if prefs.mode == "calendar"
+         else "Source: rules (/rule)"),
         (f"Bookers: catcher {'LIVE' if prefs.catcher_live else 'DRY'} · "
          f"drop {'LIVE' if prefs.drop_live else 'DRY'}"),
         f"Centres: {', '.join(prefs.centres)}",
@@ -578,13 +630,18 @@ class CommandSession:
                next_scan: str | None = None) -> str | None:
         """Returns the reply to send, or None for silence."""
         prefs = load_prefs(self.config_dir)
+        # Read the calendar-secret presence at call time (§9.3) so `/mode calendar`
+        # can warn when it's missing — the pure handler must not touch the env.
+        calendar_configured = bool(
+            os.environ.get(CALENDAR_ICS_URL_ENV, "").strip())
         result = handle_message(
             text, chat_id, prefs,
             owner_chat_id=self.owner_chat_id, now=now,
             pending_confirm_until=self._pending_confirm_until,
             pending_confirm_target=self._pending_confirm_target,
             valid_centres=self.valid_centres,
-            paid_this_week=paid_this_week, next_scan=next_scan)
+            paid_this_week=paid_this_week, next_scan=next_scan,
+            calendar_configured=calendar_configured)
         self._pending_confirm_until = result.pending_confirm_until
         self._pending_confirm_target = result.pending_confirm_target
         if result.prefs is not None:

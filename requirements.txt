@@ -5,3 +5,9 @@ python-dotenv>=1.0
 PyYAML>=6.0
 httpx>=0.27
 structlog>=24.1
+# Calendar-driven booking (ARCHITECTURE §9): parse the iCloud "Tennis" .ics
+# subscription. `icalendar` handles VEVENT/VTIMEZONE parsing; `python-dateutil`
+# (a transitive dep, pinned here for the RRULE expansion we do ourselves) does
+# the recurrence maths — icalendar parses RRULE but does not expand it.
+icalendar>=6.0
+python-dateutil>=2.9

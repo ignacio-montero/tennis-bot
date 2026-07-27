@@ -160,43 +160,42 @@ def slot_key(centre: str, date: str, time: str) -> str:
 
 
 def _rule_priority(prefs, date: str, time: str) -> int | None:
-    """Index of the highest-priority rule that admits (date, time), or None if
-    no rule does. Empty `rules` ⇒ 0 (the single permissive slot). This is the
-    PRIMARY sort key: the owner ranks intent via Telegram (rule order), so the
-    catcher books in that order (ARCHITECTURE §8.2 / the rule-priority intent)."""
-    if not prefs.rules:
-        return 0 if prefs.allows_date_time(date, time) else None
-    r = prefs.matching_rule(date, time)
-    if r is None:
-        return None
-    try:
-        return prefs.rules.index(r)
-    except ValueError:                   # _ANY_RULE sentinel (shouldn't happen here)
-        return 0
+    """Delegates to `Prefs.rule_priority` — kept as a module name for readers,
+    but the computation now lives on `Prefs` so `window_source.RulesSource` shares
+    it (the parity guarantee for rules mode)."""
+    return prefs.rule_priority(date, time)
 
 
 def match_candidates(slots_by_centre: dict[str, list[WeekSlot]],
-                     prefs, now: dt.datetime) -> list[Candidate]:
-    """The exact per-day rule predicate over the week grid, after EA's coarse
-    server-side cut. Returns bookable (free) candidates ordered by **rule
-    priority** (index 0 = highest), then earliest date, then earliest time, with
-    centre priority as a final tiebreak — so the loop books the highest-priority
-    wanted slot first.
+                     prefs, now: dt.datetime, *, source=None) -> list[Candidate]:
+    """The exact per-window predicate over the week grid, after EA's coarse
+    server-side cut. Returns bookable (free) candidates ordered by **priority
+    key** (rule index in rules mode; weekend-first in calendar mode), then
+    earliest date, then earliest time, with centre priority as a final tiebreak —
+    so the loop books the highest-priority wanted slot first.
+
+    `source` is the `WindowSource` (ARCHITECTURE §9.1) that answers "is this
+    (date, time) wanted, and at what priority". `None` ⇒ the rules predicate
+    (`Prefs.rule_priority`) — the DEFAULT, so rules mode is byte-for-byte today's
+    ordering. A calendar source supplies calendar windows + weekend-first keys.
+    WHERE (centres) always comes from prefs, never the source (§9.5).
 
     Only `state == "available"` cells are candidates: a `my_booking` cell is
     already held/paid, so excluding it here is the grid-level idempotency check
     (§8.2 — the grid surfaces existing holds directly)."""
+    priority_for = (source.priority_for if source is not None
+                    else (lambda d, t: prefs.rule_priority(d, t)))
     centre_order = list(prefs.centres)
     centre_prio = {c: i for i, c in enumerate(centre_order)}
     today = now.date().isoformat()
     now_hhmm = now.strftime("%H:%M")
-    ranked: list[tuple[int, str, str, int, Candidate]] = []
+    ranked: list[tuple] = []
     for centre in centre_order:
         for ws in slots_by_centre.get(centre, []):
             if ws.state != "available":
                 continue
-            rp = _rule_priority(prefs, ws.date, ws.time)
-            if rp is None:               # no rule admits this (day AND window)
+            rp = priority_for(ws.date, ws.time)
+            if rp is None:               # no window admits this (day AND time)
                 continue
             if ws.date == today and ws.time <= now_hhmm:
                 continue                 # already in the past today
@@ -394,7 +393,7 @@ class CyclePlan:
 
 
 def plan_cycle(slots_by_centre, prefs, memory, bookings, activity_matches,
-               now: dt.datetime, court_matches=()) -> CyclePlan:
+               now: dt.datetime, court_matches=(), *, source=None) -> CyclePlan:
     """One cycle's decision, from grid + prefs + memory + bookings + clock.
 
     Walks candidates in priority order and books the first one that is (a) not
@@ -414,7 +413,7 @@ def plan_cycle(slots_by_centre, prefs, memory, bookings, activity_matches,
     holds = count_unpaid_holds(bookings, activity_matches)
     capped_example: Candidate | None = None
     capped_paid = 0
-    for c in match_candidates(slots_by_centre, prefs, now):
+    for c in match_candidates(slots_by_centre, prefs, now, source=source):
         cdate = dt.date.fromisoformat(c.date)
         if (cdate.day, _MON[cdate.month - 1]) in held:
             continue                     # authoritative idempotency: already ours
@@ -664,6 +663,31 @@ def _maybe_heartbeat(state, now, prefs, bookings, activity_matches, tg,
             f"Holds: {holds}/{prefs.max_holds}.")
 
 
+def _maybe_calendar_alert(state, now, source, tg, live: bool = False) -> None:
+    """LOUD, rate-limited alert when calendar mode can't READ the calendar (§9.6).
+
+    The catcher runs every 30 min, so this must NOT fire every cycle during an
+    outage. It fires on ENTERING the failure state and at most once/day while it
+    persists — the same once-per-day discipline as the heartbeat / hold-ceiling
+    notice. `calendar_alert_date` is the latch; a successful read CLEARS it (see
+    `_run_catcher_cycle`), so a fresh failure the same day re-alerts ("on
+    entering"). Booking nothing is handled by the empty window list; this is only
+    the shout."""
+    today = now.date().isoformat()
+    if state.get("calendar_alert_date") == today:
+        return                            # already shouted today
+    state["calendar_alert_date"] = today
+    # Soften the wording in dry-run: nothing was going to be held anyway, so
+    # "PAUSED" would over-alarm and train the owner to ignore it (critic S2).
+    impact = ("booking is PAUSED, nothing will be held until it's readable"
+              if live else
+              "no windows this cycle (dry-run — nothing would be held anyway)")
+    tg.send(f"🚨 <b>Calendar unreadable</b> (calendar mode) — {impact}.\n"
+            f"Reason: {source.failure_reason}\n"
+            "Check TENNISBOT_CALENDAR_ICS_URL / the iCloud publish link. "
+            "(Never falls back to /rules or 'book everything'.)")
+
+
 def _notify_book(tg, c: Candidate, result, prefs) -> None:
     wd = _weekday(c.date)
     if result.dry_run:
@@ -687,7 +711,7 @@ def _notify_book(tg, c: Candidate, result, prefs) -> None:
 # ==========================================================================
 
 def _run_catcher_cycle(scanner, prefs, state, now, tg, activity_matches,
-                       court_matches=()) -> CyclePlan:
+                       court_matches=(), *, calendar_fetch=None) -> CyclePlan:
     bookings = scanner.get_bookings()
     slots_by_centre = scanner.scan(prefs)
     _maybe_heartbeat(state, now, prefs, bookings, activity_matches, tg,
@@ -695,8 +719,28 @@ def _run_catcher_cycle(scanner, prefs, state, now, tg, activity_matches,
 
     state.setdefault("slots", {})
     prune_expired_slots(state, now.date().isoformat())   # keep memory lean
+
+    # Build the window source fresh each cycle (§9.7 — a phone edit lands next
+    # cycle). Rules mode ⇒ `source=None` ⇒ match_candidates uses today's exact
+    # rule predicate (parity). Calendar mode ⇒ read the .ics now.
+    source = None
+    if prefs.mode == "calendar":
+        from .window_source import window_source_for
+        today = now.date()
+        source = window_source_for(prefs, fetch=calendar_fetch, d0=today,
+                                   d7=today + dt.timedelta(days=7), now=now)
+        if source.read_failed:
+            # §9.6: book NOTHING and shout (rate-limited). Never fall back to
+            # rules or "book everything". The empty plan below books nothing.
+            _maybe_calendar_alert(state, now, source, tg, live=prefs.catcher_live)
+            log.warning("catcher.calendar_unreadable",
+                        reason=source.failure_reason)
+            return CyclePlan(None, None, "", "no_bookable", 0, 0)
+        # Read OK ⇒ clear the alert latch so a later failure re-alerts on entry.
+        state.pop("calendar_alert_date", None)
+
     plan = plan_cycle(slots_by_centre, prefs, state["slots"], bookings,
-                      activity_matches, now, court_matches)
+                      activity_matches, now, court_matches, source=source)
 
     if plan.reason == "cap_reached" and plan.candidate is not None:
         wk = iso_week(dt.date.fromisoformat(plan.candidate.date))
@@ -751,7 +795,7 @@ def run_catcher_loop(*, interval_min: float = DEFAULT_INTERVAL_MIN,
                      max_cycles: int | None = None, notify: bool = True,
                      headless: bool = True, config_dir=None, state_dir_override=None,
                      scanner=None, notifier=None,
-                     now_fn=None, sleep_fn=None) -> None:
+                     now_fn=None, sleep_fn=None, calendar_fetch=None) -> None:
     """Poll D0–D+7 every `interval_min`, booking matched cancellations (§8.1).
 
     Self-scheduling like `run_drop_loop`: sleep → act → loop, with each cycle's
@@ -761,7 +805,9 @@ def run_catcher_loop(*, interval_min: float = DEFAULT_INTERVAL_MIN,
     change lands next cycle; books only when `prefs.catcher_live` (else dry-run).
 
     Injection seams for tests: `scanner` (a fake replaces `_PlaywrightScanner`),
-    `notifier`, and `now_fn`/`sleep_fn` — so the whole loop runs offline."""
+    `notifier`, `now_fn`/`sleep_fn`, and `calendar_fetch` (a fake `.ics` fetch for
+    calendar mode, §9) — so the whole loop, including calendar mode, runs
+    offline with no browser and no network."""
     now_fn = now_fn or (lambda: dt.datetime.now(LONDON))
     sleep_fn = sleep_fn or time.sleep
 
@@ -808,7 +854,8 @@ def run_catcher_loop(*, interval_min: float = DEFAULT_INTERVAL_MIN,
             if scanner is None:
                 scanner = _PlaywrightScanner(headless=headless)
             _run_catcher_cycle(scanner, prefs, state, now, notifier,
-                               activity_matches, court_matches)
+                               activity_matches, court_matches,
+                               calendar_fetch=calendar_fetch)
             save_state(state, state_dir_override)
         except Exception as e:            # one bad cycle must never kill the loop
             log.error("catcher.cycle_failed", err=str(e))

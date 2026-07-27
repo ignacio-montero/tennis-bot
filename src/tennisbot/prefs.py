@@ -44,6 +44,15 @@ LONDON = ZoneInfo("Europe/London")
 SCHEMA_VERSION = 2
 PREFS_FILENAME = "prefs.json"
 
+# Booking SOURCE (ARCHITECTURE §9): which `WindowSource` drives booking. This is
+# a preference (Telegram-settable via /mode, echoed in /status), default "rules"
+# for a backward-compatible upgrade. NB: distinct from `Prefs.live_state`
+# ("LIVE"/"DRY-RUN"), which is the live STATE — the two were both once called
+# "mode"; the field keeps the wire/command name "mode", the live state was
+# renamed to `live_state` to end the collision.
+MODES = ("rules", "calendar")
+DEFAULT_MODE = "rules"
+
 # Env-injected location, exactly like DROP_STATE_DIR / WATCHD_STATE_DIR. Read at
 # call time (not import time) so a process — or a test — can point it elsewhere
 # without re-importing the module.
@@ -156,6 +165,11 @@ class Prefs:
     # = "is anything live".
     catcher_live: bool = False
     drop_live: bool = False
+    # Booking SOURCE (ARCHITECTURE §9): "rules" (today's /rule engine, default) or
+    # "calendar" (the iCloud .ics windows). NOT the live state — see `live_state`.
+    # An unknown value on READ degrades the doc (→ dry-run); the WRITE path rejects
+    # it (validate). The calendar URL is a secret in the env, never here (§9.3).
+    mode: str = DEFAULT_MODE
     updated_at: str | None = None
     updated_by: str = "default"
     version: int = SCHEMA_VERSION
@@ -268,6 +282,15 @@ class Prefs:
             _bad("max_holds", holds)
             holds = d.max_holds
 
+        # Booking source (§9.3). ABSENT ⇒ "rules" silently (backward-compatible
+        # upgrade). PRESENT-but-unknown ⇒ DEGRADE — an unreadable intent must not
+        # let us silently pick a source (§1.4a); degrading forces dry-run, so a
+        # bad `mode` can never quietly start booking from the wrong source.
+        mode = raw.get("mode", DEFAULT_MODE)
+        if mode not in MODES:
+            _bad("mode", mode)
+            mode = DEFAULT_MODE
+
         # Two live flags (schema v2). Prefer the canonical pair; fall back to a
         # v1 `live` (migrate → DROP-ONLY, see W1 below). A non-bool of either
         # fails SAFE (dry-run).
@@ -340,7 +363,7 @@ class Prefs:
         return cls(
             centres=centres, rules=rules,
             slot_length_hours=length, weekly_cap=cap, max_holds=holds,
-            catcher_live=catcher_live, drop_live=drop_live,
+            catcher_live=catcher_live, drop_live=drop_live, mode=mode,
             updated_at=raw.get("updated_at") or None,
             updated_by=raw.get("updated_by") or d.updated_by,
             version=version, degraded=degraded,
@@ -361,6 +384,7 @@ class Prefs:
             "max_holds": self.max_holds,
             "catcher_live": self.catcher_live,
             "drop_live": self.drop_live,
+            "mode": self.mode,
             "updated_at": self.updated_at,
             "updated_by": self.updated_by,
         }
@@ -368,7 +392,11 @@ class Prefs:
     # -- helpers the readers (catcher / sprinter) need ----------------------
 
     @property
-    def mode(self) -> str:
+    def live_state(self) -> str:
+        """The live STATE for display ("LIVE"/"DRY-RUN"). Renamed from `mode` to
+        free that name for the booking-SOURCE field (§9): the two were colliding —
+        this is "is a real hold created?", the field is "where do windows come
+        from?"."""
         return "LIVE" if self.live else "DRY-RUN"
 
     def allows_day(self, day: str) -> bool:
@@ -409,6 +437,23 @@ class Prefs:
     def allows_date_time(self, iso_date: str, hhmm: str) -> bool:
         """A (date, time) is bookable iff some rule admits it (day AND window)."""
         return self.matching_rule(iso_date, hhmm) is not None
+
+    def rule_priority(self, iso_date: str, hhmm: str) -> int | None:
+        """Index of the highest-priority rule admitting (date, time), or None if
+        none does. Empty `rules` ⇒ 0 (the single permissive slot). The PRIMARY
+        sort key for the catcher: the owner ranks intent via rule order, so the
+        catcher books in that order (ARCHITECTURE §8.2). Lives here (not the
+        catcher) so `window_source.RulesSource` can delegate to the SAME code —
+        that shared computation is what keeps rules-mode ordering identical."""
+        if not self.rules:
+            return 0 if self.allows_date_time(iso_date, hhmm) else None
+        r = self.matching_rule(iso_date, hhmm)
+        if r is None:
+            return None
+        try:
+            return self.rules.index(r)
+        except ValueError:               # _ANY_RULE sentinel (shouldn't happen here)
+            return 0
 
     def _rule_for_date(self, iso_date: str) -> Rule | None:
         """Highest-priority rule matching `iso_date` by DAY only (window ignored),
@@ -456,7 +501,10 @@ class Prefs:
     def summary(self) -> str:
         """One-line "whole picture" line appended to every config change reply
         (API_SPEC §2.2), leading with the mode (§8.8: mode always surfaced)."""
-        base = (f"{self.mode} · {'+'.join(self.centres)} · "
+        # Calendar mode is surfaced (the /rule segment is dormant then); rules
+        # mode keeps the exact pre-feature line so existing readers are unchanged.
+        source = " · 📅 calendar" if self.mode == "calendar" else ""
+        base = (f"{self.live_state}{source} · {'+'.join(self.centres)} · "
                 f"{self._rules_segment()} · {self.slot_length_hours}h · "
                 f"cap {self.weekly_cap} · holds {self.max_holds} · "
                 f"catcher {'LIVE' if self.catcher_live else 'DRY'} · "
@@ -590,6 +638,9 @@ def validate(prefs: Prefs, valid_centres: Iterable[str] | None = None) -> None:
     for flag in ("catcher_live", "drop_live"):
         if not isinstance(getattr(prefs, flag), bool):
             raise PrefsError(f"{flag} must be true or false.")
+    if prefs.mode not in MODES:
+        raise PrefsError(f"Mode must be one of {', '.join(MODES)} — "
+                         f"got {prefs.mode!r}.")
     # Each rule must have valid days and a non-inverted window (belt-and-braces:
     # from_dict drops bad rules and /rule validates before saving, but a direct
     # construction must not be able to persist a rule the readers can't honour).

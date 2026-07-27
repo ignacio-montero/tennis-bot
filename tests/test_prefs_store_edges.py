@@ -64,7 +64,7 @@ def test_a_malformed_live_flag_always_reads_as_dry_run(tmp_path, doc):
     # the cost of the two failure directions is wildly different.
     p = load_prefs(write(tmp_path, doc))
     assert p.live is False
-    assert p.mode == "DRY-RUN"
+    assert p.live_state == "DRY-RUN"
 
 
 @pytest.mark.parametrize("doc", [

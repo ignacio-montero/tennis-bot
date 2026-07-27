@@ -795,3 +795,135 @@ covers it, so raising the lead without widening the window fails CI.
 **Consequence for the catcher:** the blackout is now ~22 min, which will swallow
 a whole 30-min cycle most nights. Acceptable, and it belongs in the catcher's
 blackout-aware scheduling (§8.10e).
+
+## 9. Calendar-driven booking (subsystem)
+
+Scoped in [PRD-calendar-integration.md](PRD-calendar-integration.md). Lets the
+owner drive bookings from a dedicated iCloud "Tennis" calendar instead of
+Telegram `/rule`s: **every event is a booking request, its time range is the
+search window.** MVP is **read-only (part 1)**; writing courts back to the
+calendar (part 2) is deferred.
+
+### 9.1 The central idea — a `WindowSource` (Strategy pattern)
+
+A calendar event "Sat 2 Aug 10:00–12:00" is exactly a rule `Sat 10:00-12:00`
+scoped to one date. So the design is NOT a second booking engine — it is a
+**second source of the same per-date windows**, behind one interface both the
+drop and the catcher already-conceptually consume:
+
+```
+WindowSource:
+  windows_for_date(date) -> list[Window]        # the drop: one date
+  all_windows(d0, d7)    -> list[Window]         # the catcher: the D0–D+7 range
+  # Window = (date, earliest|None, latest|None, priority_key)
+```
+
+Two implementations, selected by `prefs.mode`:
+- **RulesSource** — wraps today's `prefs.rules` (`matching_rule` /
+  `earliest_for_date` / `latest_for_date`); `priority_key` = rule index.
+- **CalendarSource** — wraps the parsed `.ics`; `priority_key` = `(is_weekend?0:1,
+  date, time)` (§9.5, the weekend-first rule).
+
+Everything downstream — the matcher, the weekly cap, the `max_holds` ceiling, the
+`catcher_live`/`drop_live` gates, dry-run/live — is **unchanged**; it consumes
+`Window`s without caring where they came from. This is the whole reason the
+feature is cheap: one seam, two producers.
+
+### 9.2 Read mechanism — `.ics` subscription (decided; CalDAV rejected)
+
+The bot fetches the calendar's **public subscription URL** (an `.ics`/iCalendar
+document over HTTPS) — read-only, no login. **CalDAV was rejected for the MVP**
+(DECISIONS 2026-07-27): its app-specific password grants read/write to the
+owner's *entire* iCloud calendar set, violating least privilege, whereas the
+subscription URL only exposes reading this one low-sensitivity calendar. The
+trade accepted: read-only forever on this path (part 2 will need a separate,
+authenticated door) and Apple's publish-cache lag (tolerable — blocks are placed
+well ahead of booking).
+
+### 9.3 Secret vs config split (reuses the existing boundary)
+
+- The **subscription URL is a secret** ("secret link" — whoever holds it reads
+  the calendar). It lives in the **untracked `.env` on the box**
+  (`TENNISBOT_CALENDAR_ICS_URL`), beside EA/Telegram creds. It is NEVER in
+  `prefs.json` (which is Telegram-writable, echoed in `/status`, and logged — a
+  secret there would leak).
+- The **`mode`** (`"rules"` | `"calendar"`) IS a preference → a new `prefs.json`
+  field, set from Telegram (`/mode`), **default `"rules"`** (backward-compatible;
+  no behaviour change on upgrade). An unreadable/unknown `mode` degrades like any
+  other bad field (→ forces dry-run, §1.4a).
+
+### 9.4 The reader — pure parse + thin fetch (functional core / imperative shell)
+
+A small module: `fetch(url) -> text` (the only IO) and `parse(ics_text, d0, d7,
+tz=London) -> list[Window]` (pure, unit-tested against saved `.ics` fixtures — no
+network in tests). Uses the standard **`icalendar`** library so recurrence
+(`RRULE`) expansion and `VTIMEZONE` handling are not hand-rolled.
+- **Timezone:** event times are converted to `Europe/London` (the bot's civil TZ)
+  before comparison with slot times. Floating (TZ-less) times assume London.
+- **All-day events** (DATE-valued `DTSTART`, no time) → **"any time that day"**: a
+  full-day window `(earliest=None, latest=None)` on that date (equivalent to a
+  `<day> any` rule). *(decided)*
+- **Recurring events**: expanded occurrences in D0–D+7 are treated like one-offs.
+- **Edge — event crossing midnight** (rare): mapped to the date of `DTSTART`, with
+  the window clamped to end-of-day; documented, not optimised.
+
+### 9.5 Priority & the safety rails (unchanged bounds, new ordering)
+
+In calendar mode there is no owner-authored rule order, so `CalendarSource`
+supplies the ranking the PRD agreed: **weekend blocks (Fri/Sat/Sun) before
+weekday blocks; within a tier, earliest date then earliest time.** The weekly cap
+and the `max_holds` ceiling bound calendar-mode bookings exactly as in rules
+mode; **calendar mode never implies live** — only `catcher_live`/`drop_live` do.
+
+### 9.6 Fail-safe — book nothing, fail LOUD (decided)
+
+Three outcomes, deliberately distinguished:
+- **Read OK, events present** → produce those windows, book normally.
+- **Read OK, zero events** → produce no windows → book nothing, **silently**
+  (a quiet week is not news).
+- **Read FAILED** (network error, non-200, unparseable, or `mode="calendar"` but
+  `TENNISBOT_CALENDAR_ICS_URL` unset) → produce no windows → book nothing **AND
+  raise a loud Telegram alert.** We never fall back to `/rule`s (a forgotten
+  stale rule could book something unintended) and never fall back to
+  "book everything." Same spirit as degraded-prefs → dry-run.
+- **Alert rate-limiting:** the catcher runs every 30 min, so the loud alert must
+  fire on entering a failure state (and at most once/day while it persists), not
+  every cycle — otherwise a calendar outage spams the owner. Mirrors the
+  once-per-day heartbeat / once-per-week cap-notice patterns (§8.9).
+
+### 9.7 Refresh cadence
+
+Fetched fresh at each **drop pre-arm** (once/night) and each **catcher cycle**
+(every 30 min) — the same "read the source fresh every cycle so a phone edit
+lands next cycle" pattern as `prefs.json`. 30-min cadence is gentle on Apple; no
+extra caching needed for the MVP.
+
+### 9.8 Deferred — part 2 (write booked courts back)
+
+Out of scope now. When it comes it needs an *authenticated, writable* connection
+(CalDAV + app-specific password, or a later Apple option) — a different trust
+boundary than the read-only URL — so it is a separate decision, not a bolt-on to
+this reader.
+
+### 9.9 Untrusted-input hardening (the `.ics` is external network data)
+
+The subscription document is fetched over the network, so its content controls
+our work. The key lesson (from the critic pass): **a `try/except` bounds
+*exceptions*, not *time or memory*** — a hang, an output explosion, and an OOM
+`SIGKILL` don't raise, so the fail-safe must *prevent* those conditions, not catch
+them. Concretely (`calendar_source.py`):
+- **Bounded RRULE expansion.** `dateutil`'s `between()` generates occurrences from
+  the event's `DTSTART` forward, so a sub-daily recurrence (`FREQ=SECONDLY`) with
+  an old start iterates ~10⁸ times — an effective hang. We **reject sub-daily
+  `FREQ` before expanding** (a tennis calendar never recurs sub-daily) and cap
+  occurrences (`_MAX_OCCURRENCES`). A pathological event raises `CalendarReadError`
+  which `parse_ics` re-raises (whole read fails LOUD), distinct from a merely
+  malformed event (skipped).
+- **Bounded fetch.** `fetch_ics` **streams** with a byte cap (`MAX_ICS_BYTES`, vs
+  OOM→SIGKILL→crash-loop) and a wall-clock **total deadline** (`TOTAL_FETCH_DEADLINE`,
+  vs a slow-drip that a per-operation timeout can't stop). Over either → loud fail-safe.
+- **URL redaction is a catch-all.** The secret URL is scrubbed from *every* error
+  path (incl. `httpx.InvalidURL`/`UnsupportedProtocol`, which are not `HTTPError`).
+- **Known safe-direction gaps (BACKLOG):** `RDATE` occurrences are ignored, and a
+  *recurring* multi-day all-day event opens one day per occurrence — both
+  under-book (never over-book), so neither is a money-safety or wedge risk.

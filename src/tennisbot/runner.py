@@ -23,6 +23,7 @@ from .models import RunResult, Slot
 from .notify.telegram import Telegram
 from .prefs import load_prefs
 from .providers.everyoneactive import EveryoneActiveProvider, make_context
+from .window_source import window_source_for
 
 log = structlog.get_logger()
 SHOTS = Path(__file__).resolve().parents[2] / "screenshots"
@@ -564,7 +565,8 @@ def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
                   dry_run: bool = True, notify: bool = True,
                   headless: bool = True, max_iters: int | None = None,
                   epsilon: float = 0.15, retry_window_s: float = 90.0,
-                  retry_gap_s: float = 1.0, config_dir=None) -> None:
+                  retry_gap_s: float = 1.0, config_dir=None,
+                  calendar_fetch=None) -> None:
     """Self-scheduling nightly drop booker — the homelab `drop` sidecar.
 
     One long-running container (no host cron, no Docker socket): each night it
@@ -596,6 +598,14 @@ def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
     """
     import time as _time
     d = load_targets()[target_key].drop
+    # A loop-level notifier for the §9.6 calendar-unreadable alert (run_drop makes
+    # its own for per-drop messages). Built once; _NullTelegram when notify is off
+    # so tests need no env.
+    if notify:
+        _s = Secrets.from_env()
+        loop_tg = Telegram(_s.telegram_bot_token, _s.telegram_chat_id)
+    else:
+        loop_tg = _NullTelegram()
     handled = 0.0
     n = 0
     while max_iters is None or n < max_iters:
@@ -622,42 +632,61 @@ def run_drop_loop(target_key: str = "paddington", want_time: str | None = None,
             # missing/corrupt file degrades to safe defaults (§1.1/§1.4a).
             prefs = load_prefs(config_dir)
 
-            # Day-filter (§8.6): the drop releases exactly one weekday (D+7). If
-            # that weekday isn't preferred, skip tonight and reschedule to the
-            # next night — WITHOUT logging in, so we don't burn an EA session (or
-            # race the blackout) on a night we don't want a court. Empty `days`
-            # ⇒ allows_date always True ⇒ never fires (backward-compatible).
-            if not prefs.allows_date(target_date):
-                log.info("drop_loop.skipped_not_preferred_day",
-                         drop_date=target_date, days=list(prefs.days))
+            # Window source (ARCHITECTURE §9.1): one interface, two producers.
+            # RULES mode ⇒ `RulesSource` reproduces the EXACT pre-feature branch
+            # (day-filter + the highest-priority rule's floor/ceiling, else the
+            # CLI `--after` fallback), so rules-mode firing is byte-for-byte
+            # unchanged. CALENDAR mode ⇒ read the `.ics` fresh (§9.7) for tonight's
+            # D+7 date only. Built each night after the sleep so a phone edit lands.
+            td = dt.date.fromisoformat(target_date)
+            source = window_source_for(prefs, after_time=after_time,
+                                       fetch=calendar_fetch, d0=td, d7=td)
+            if source.read_failed:
+                # §9.6 fail-safe (calendar mode only): book NOTHING and shout
+                # LOUD. NEVER fall back to /rules or "book everything". The drop
+                # pre-arms once a night, so this is naturally ≤ once/day.
+                log.error("drop_loop.calendar_unreadable", drop_date=target_date,
+                          reason=source.failure_reason)
+                try:
+                    loop_tg.send(
+                        "🚨 <b>Calendar unreadable</b> (calendar mode) — the "
+                        f"drop for {target_date} booked NOTHING.\n"
+                        f"Reason: {source.failure_reason}\n"
+                        "Check TENNISBOT_CALENDAR_ICS_URL / the iCloud link.")
+                except Exception:
+                    pass
                 handled = instant
                 continue
 
-            # Window source (§v2). A configured rule is the AUTHORITATIVE window
-            # for its day; the CLI `--after` is only a no-prefs fallback. So once
-            # ANY rule exists, take BOTH bounds from the highest-priority rule
-            # matching this drop date (day-matched — `allows_date` passed above),
-            # NOT from `--after`. This picks the right window per weekday, e.g.
-            # `Tue 18:00- / Sat 10:00-12:00` gives eff_after=18:00 on a Tue and
-            # 10:00–12:00 on a Sat.
-            #   - A rule may set no floor (ceiling-only `Sat -12:00`, or a bare
-            #     `<days> any`): use "00:00", NOT the CLI `--after`. Falling back
-            #     to `--after 19:00` there would INVERT the band ([19:00,12:00) is
-            #     empty) and silently book nothing (critic S1). "00:00" ⇒ "earliest
-            #     available up to the ceiling", which is what the rule means.
-            #   - `latest` is an EXCLUSIVE upper bound (matches prefs `allows_time`);
-            #     it reaches the single-date engine as `before_time` (run_drop →
-            #     _run_court → choose_court_slots). None ⇒ no ceiling.
-            #   - Multi-rule-same-weekday: the drop pursues only the top matching
-            #     rule's window (the catcher considers ALL rules). Safe (drop ⊆
-            #     catcher) but not full parity — see BACKLOG §2.
-            # Empty rules (no prefs, or `/rules clear`) keep today's CLI behaviour.
-            if prefs.rules:
-                eff_after = prefs.earliest_for_date(target_date) or "00:00"
-                eff_before = prefs.latest_for_date(target_date)
+            windows = source.windows_for_date(target_date)
+            if not windows:
+                # No window for tonight's release. RULES mode: D+7's weekday isn't
+                # preferred (the original skip — WITHOUT logging in, so no EA
+                # session burned / blackout raced). CALENDAR mode: no event that
+                # day. Either way skip and reschedule. Empty `rules` never lands
+                # here (RulesSource always yields the CLI-fallback window).
+                log.info("drop_loop.skipped_no_window", drop_date=target_date,
+                         mode=prefs.mode, days=list(prefs.days))
+                handled = instant
+                continue
+
+            # The highest-priority window for this date sets the drop's band.
+            #   - Empty-rules CLI fallback (rules mode, no rules): pass `--after`
+            #     straight through (may be None ⇒ ranked prefs) — today's exact
+            #     behaviour.
+            #   - Otherwise a floor of None (ceiling-only rule, `<days> any`, or an
+            #     all-day calendar event) ⇒ "00:00" ("earliest available up to the
+            #     ceiling"), NOT `--after` — which would INVERT a ceiling-only band.
+            #   - `latest` is an EXCLUSIVE ceiling → `before_time` on the engine
+            #     (run_drop → _run_court → choose_court_slots). None ⇒ no ceiling.
+            #   - Multi-window-same-day: the drop pursues only the TOP window (the
+            #     catcher considers all). Safe (drop ⊆ catcher) — see BACKLOG §2.
+            w = windows[0]
+            if prefs.mode != "calendar" and not prefs.rules:
+                eff_after, eff_before = after_time, None
             else:
-                eff_after = after_time
-                eff_before = None
+                eff_after = w.earliest if w.earliest is not None else "00:00"
+                eff_before = w.latest
             # slot_length_hours: only force two-hours ON (==2). ==1 is the default
             # and indistinguishable from "unset", so forcing it OFF could override
             # the target's own config on a default read — backward-compat forbids.
