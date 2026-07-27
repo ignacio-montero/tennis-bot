@@ -34,6 +34,7 @@ COPY config/ /app/config/
 #  /data/watchd     — watchd state (observations.jsonl, bracket.json) → volume
 #  /data/drop       — drop outcomes (drop-outcomes.jsonl)             → volume
 #  /data/catch      — catcher state (catcher-state.json)              → volume
+#  /config          — shared prefs.json (tennisbot-config volume; prefs writes it)
 #  /app/.session    — Playwright storage_state (ea_state.json)        → volume
 #  /app/screenshots — diagnostic screenshots (ephemeral is fine)
 # Pre-creating the volume mountpoints as pwuser means a FRESH named volume
@@ -41,8 +42,13 @@ COPY config/ /app/config/
 # mountpoint's ownership from the image). Without /data/catch here, a fresh
 # tennisbot-catch-state volume mounted root-owned and the catcher's writes failed
 # `Permission denied` until a one-time manual chown (homelab decisions 2026-07-26).
-RUN mkdir -p /data/watchd /data/drop /data/catch /app/.session /app/screenshots \
-    && chown -R pwuser:pwuser /data /app/.session /app/screenshots
+# ⚠️ /config only self-heals for a volume FIRST mounted by THIS image. If the
+# tennisbot-config volume is HAND-SEEDED by another image (e.g.
+# `alpine sh -c 'echo … > /config/prefs.json'`), it comes out root-owned and this
+# mkdir can't override the mount — the seed step must then chown to pwuser (1001),
+# else the prefs writer gets EACCES on its atomic temp file (decisions 2026-07-27).
+RUN mkdir -p /data/watchd /data/drop /data/catch /config /app/.session /app/screenshots \
+    && chown -R pwuser:pwuser /data /config /app/.session /app/screenshots
 
 USER pwuser
 
