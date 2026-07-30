@@ -48,7 +48,17 @@ PYTHONPATH=src .venv/bin/python -m tennisbot catch-loop --max-cycles 1 --no-noti
 Targets/surfaces/activities are configured in `config/targets.yaml`.
 `--time HH:MM` overrides ranked prefs (books that time, any court).
 
-## Cancellation catcher — DEPLOYED on the homelab, dry-run ✅ (2026-07-27, v0.5.0 schema v2)
+## Cancellation catcher — DEPLOYED on the homelab, dry-run ✅ (catch on v0.7.1)
+- ⚠️ **Session re-auth (v0.7.1, 2026-07-30) — learned the hard way.** The catcher
+  is a **days-long daemon**, so it must RE-AUTHENTICATE, not just navigate. It
+  used to establish the EA Connect session ONCE (`_session_ready` one-shot) and
+  then only `go_home()` each cycle; the Connect cookie expires after a few hours,
+  so once it lapsed EVERY scan bounced to MRMLogin (`go_home landed off search
+  page`) and it silently booked/previewed NOTHING for 3 days (27→30 Jul). Fix:
+  `_ensure_session` now probes `_connect_live()` on the reused path and re-auths
+  via `enter_connect`'s MRMLogin path (the drop's robust login) on a lapse. The
+  drop was never affected — it logs in fresh every night. **Only `tennisbot-catch`
+  is on 0.7.1**; drop + prefs stay on 0.7.0 (fix is catcher-only).
 `tennisbot catch-loop` (`catcher.py`) polls D0–D+7 every 30 min for freed courts
 matching the shared `prefs.json` and books them via the EXISTING single-date
 engine (re-search seam, §8.2 — no click-through). Ships **dry-run**; goes live

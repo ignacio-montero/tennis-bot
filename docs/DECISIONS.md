@@ -343,3 +343,15 @@ deferred.
   never reaches it). A pathological event fails the read LOUD; a merely-malformed
   one is skipped — the `except CalendarReadError: raise` before the generic
   `except` keeps the loud signal from degrading into silent skip.
+- **A long-running daemon must re-authenticate, not just navigate (2026-07-30,
+  v0.7.1).** The catcher established its EA session once (`_session_ready`
+  one-shot) then only `go_home()`d each cycle; when the Connect cookie expired
+  (hours), every scan bounced to MRMLogin and it silently did nothing for 3 days.
+  Fix: re-affirm the session each reused cycle (`_connect_live()` probe) and
+  re-auth on a lapse via `enter_connect`'s MRMLogin path — the drop's robust
+  login, which is exactly why the *drop* never had this bug (fresh login nightly).
+  *Rejected:* a lazy heal only inside `scan()`'s surface loop — `get_bookings()`
+  runs first and returns `[]` silently on a dead session (under-counts the cap),
+  so the heal belongs at the shared `_ensure_session` chokepoint. This is the
+  "fail loud" principle applied to a daemon: the heartbeat exists precisely
+  because a stuck `no_bookable` looks identical to "nothing to book".

@@ -3,15 +3,25 @@
 _Last updated: 2026-07-27. For how to run it and the operational gotchas see
 [../CLAUDE.md](../CLAUDE.md); for future ideas see [BACKLOG.md](BACKLOG.md)._
 
-## ⏭️ CURRENT STATE 2026-07-27 — schema v2 deployed (all dry-run)
+## ⏭️ CURRENT STATE 2026-07-30 — calendar mode live, catcher session-bug fixed (still dry-run)
 
-All three tennisbot services (`tennisbot-drop`, `tennisbot-catch`,
-`tennisbot-prefs`) run on the homelab at image **`:0.5.0`**, healthy, **DRY-RUN**
-(both live flags off). One shared Telegram-set `prefs.json` governs both bookers.
-Schema v2 adds per-day priority **rules**, a **`max_holds`** concurrent-hold
-ceiling, and split **`catcher_live`/`drop_live`** flags (see CLAUDE.md catcher
-section + DECISIONS.md 2026-07-26). The on-disk config is still `version:1` and
-auto-migrates on read; it rewrites as v2 on the next Telegram edit.
+All three tennisbot services run on the homelab, healthy, **DRY-RUN** (both live
+flags off): `tennisbot-catch` on **`:0.7.1`**, `tennisbot-drop` + `tennisbot-prefs`
+on **`:0.7.0`**. Config is now `mode: calendar` (set from Telegram 29 Jul) — a
+dedicated iCloud "Tennis" calendar drives booking; one shared Telegram-set
+`prefs.json` governs both bookers.
+
+- **⚠️ Fixed 2026-07-30 — the catcher was silently dead for 3 days.** It logged
+  in once and never re-authenticated, so once the EA session lapsed every 30-min
+  cycle bounced to MRMLogin and booked/previewed nothing. `0.7.1` re-auths each
+  reused cycle (see CLAUDE.md catcher section + DECISIONS.md). The drop was
+  unaffected (fresh login nightly) and calendar reading was already proven
+  working (drop dry-ran `would book 18:00 Tennis Court 3` for Thu 6 Aug on 30 Jul
+  00:00). Verified: catch's first 0.7.1 cycle scanned cleanly
+  (`week_grid.parsed`), outbound Telegram re-confirmed with a test ping.
+- **Reminder — nothing books for real yet.** Both `catcher_live` and `drop_live`
+  are off; every message is a `would book`/`DRY-RUN` preview. Going live is the
+  deliberate per-job step below.
 
 **Next steps, in order:**
 1. **PRE-LIVE GATE — verify Manage-Bookings court text.** Before `/catcher on`,
