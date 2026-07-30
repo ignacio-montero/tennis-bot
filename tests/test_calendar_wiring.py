@@ -145,11 +145,16 @@ def test_catcher_calendar_event_books_the_matching_window(tmp_path):
     assert scanner.booked == [("paddington", "2026-07-25", "18:00")]
 
 
-def test_catcher_calendar_empty_read_is_silent_and_books_nothing(tmp_path):
+def test_catcher_calendar_empty_read_books_nothing_and_states_empty_plan_once(tmp_path):
+    # Read OK but zero events ⇒ book NOTHING (unchanged). The plan preview (§8.12)
+    # now states the empty plan ONCE — this is the very silence that left the
+    # owner unsure calendar mode worked; a single 'no events' notice ≠ the LOUD
+    # unreadable alert, and it does not repeat (change-triggered).
     scanner = FakeScanner(_grid(("2026-07-25", "18:00", "available")))
     tg = _run_catcher(tmp_path, scanner, _fetch(_ics()), Prefs(mode="calendar"))
     assert scanner.booked == []
-    assert tg.sends == []                       # read OK but empty ⇒ silence
+    assert len(tg.sends) == 1
+    assert "no tennis events" in tg.sends[0].lower()
 
 
 def test_catcher_unreadable_calendar_books_nothing_and_alerts_loud(tmp_path):

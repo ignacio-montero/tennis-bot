@@ -796,6 +796,31 @@ covers it, so raising the lead without widening the window fails CI.
 a whole 30-min cycle most nights. Acceptable, and it belongs in the catcher's
 blackout-aware scheduling (§8.10e).
 
+### 8.12 Calendar plan preview — proactive "what I'd book" (2026-07-30)
+
+Calendar mode was too silent about its INTENT: switching to `/mode calendar` and
+then seeing nothing gave no confirmation of what the bot would actually try to
+book, and an empty calendar was indistinguishable from a broken one. The preview
+closes that gap without becoming noise.
+
+- **Change-triggered, not periodic.** Each cycle the catcher builds the coming
+  week's ranked windows (weekend-first, §9.5) and hashes them into a signature
+  persisted in `catcher-state.json` (`calendar_plan_sig`). A Telegram message is
+  sent only when the signature CHANGES — i.e. on entering calendar mode, editing
+  a calendar event, or the rolling 7-day horizon admitting/dropping one. An
+  unchanged plan is silent; the daily heartbeat (§8.9) already proves liveness.
+- **Empty is a plan too.** Zero events sends one "no events" notice (the §9.6
+  refinement) — this is precisely the case that left the owner unsure, and it
+  does not repeat.
+- **Never aborts the booking cycle.** The send is wrapped (like `_notify_book`),
+  and the signature is latched before sending (like `_maybe_calendar_alert`), so
+  a Telegram hiccup costs at most one missed preview, never a lost cycle/state.
+- *Rejected:* a periodic daily digest (redundant with the heartbeat and noisier),
+  and a per-cycle send (would spam every 30 min). Change-detection gives feedback
+  exactly when it is informative. Applies to **calendar mode only** — rules are
+  self-evident from `/rules`, and `RulesSource.all_windows` is a coarse enumeration
+  (a rule is a predicate, not a finite list), so a rules "plan" would mislead.
+
 ## 9. Calendar-driven booking (subsystem)
 
 Scoped in [PRD-calendar-integration.md](PRD-calendar-integration.md). Lets the
@@ -879,8 +904,12 @@ mode; **calendar mode never implies live** — only `catcher_live`/`drop_live` d
 
 Three outcomes, deliberately distinguished:
 - **Read OK, events present** → produce those windows, book normally.
-- **Read OK, zero events** → produce no windows → book nothing, **silently**
-  (a quiet week is not news).
+- **Read OK, zero events** → produce no windows → book nothing. **Per-cycle
+  silent** (a quiet week is not news), BUT the plan preview (§8.11) states the
+  empty plan **once** on change (§8.12) — a single "no events" notice, not a
+  per-cycle ping. This disambiguates "working but empty" from "broken", exactly
+  the ambiguity that made the owner unsure calendar mode was live. Distinct from
+  the LOUD read-FAILED alert below.
 - **Read FAILED** (network error, non-200, unparseable, or `mode="calendar"` but
   `TENNISBOT_CALENDAR_ICS_URL` unset) → produce no windows → book nothing **AND
   raise a loud Telegram alert.** We never fall back to `/rule`s (a forgotten

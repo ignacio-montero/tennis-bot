@@ -723,6 +723,61 @@ def _maybe_calendar_alert(state, now, source, tg, live: bool = False) -> None:
             "(Never falls back to /rules or 'book everything'.)")
 
 
+def _fmt_window(w) -> str:
+    """One calendar window as 'Sat 02 Aug  18:00–20:00'. Open-ended events read
+    'from …' / 'until …' / 'any time' (latest is an EXCLUSIVE ceiling, §9.1)."""
+    day = dt.date.fromisoformat(w.date).strftime("%a %d %b")
+    if w.earliest and w.latest:
+        span = f"{w.earliest}–{w.latest}"
+    elif w.earliest:
+        span = f"from {w.earliest}"
+    elif w.latest:
+        span = f"until {w.latest}"
+    else:
+        span = "any time"
+    return f"{day}  {span}"
+
+
+def _maybe_calendar_preview(state, source, prefs, tg, d0, d7) -> None:
+    """Proactively confirm what the CALENDAR maps to for the coming week, so
+    calendar mode is never silent about its INTENT (the owner's original ask:
+    'tell me what it would book').
+
+    Change-triggered, not periodic. It sends only when the upcoming-week plan
+    DIFFERS from the one last sent (persisted as `calendar_plan_sig`). That fires
+    at exactly the informative moments — entering calendar mode, editing an event,
+    or the rolling 7-day horizon admitting/dropping one — and stays quiet
+    otherwise, so it never becomes noise (the daily heartbeat already proves
+    liveness). An empty calendar is itself a plan worth stating ONCE ('no events'
+    is a signature too), which is precisely the case that left the owner unsure
+    anything was working. Only called on a SUCCESSFUL read; the unreadable case is
+    the LOUD `_maybe_calendar_alert` (§9.6)."""
+    windows = sorted(source.all_windows(d0, d7), key=lambda w: w.priority_key)
+    lines = [_fmt_window(w) for w in windows]
+    sig = "|".join(lines) if lines else "EMPTY"
+    if state.get("calendar_plan_sig") == sig:
+        return                                  # unchanged since last sent
+    # Latch BEFORE sending (as `_maybe_calendar_alert` does): the send is wrapped
+    # so a Telegram hiccup can never abort the cycle and lose booking/state — the
+    # cost is at most one missed preview, re-sent when the plan next changes.
+    state["calendar_plan_sig"] = sig
+    if not lines:
+        body = ("📅 <b>Calendar plan</b> — no tennis events in your iCloud "
+                "calendar for the next 7 days, so there's nothing to book. Add "
+                "events to the Tennis calendar and I'll pick them up.")
+    else:
+        ranked = "\n".join(f"{i}. {ln}" for i, ln in enumerate(lines, 1))
+        booking = ("ON — will book for real" if prefs.catcher_live
+                   else "dry-run — /catcher on to book for real")
+        body = (f"📅 <b>Calendar plan</b> — next 7 days "
+                f"(weekend-first, up to {prefs.weekly_cap}/week):\n{ranked}\n"
+                f"Booking: {booking}.")
+    try:
+        tg.send(body)
+    except Exception:
+        log.warning("catcher.calendar_preview_send_failed")
+
+
 def _notify_book(tg, c: Candidate, result, prefs) -> None:
     wd = _weekday(c.date)
     if result.dry_run:
@@ -773,6 +828,10 @@ def _run_catcher_cycle(scanner, prefs, state, now, tg, activity_matches,
             return CyclePlan(None, None, "", "no_bookable", 0, 0)
         # Read OK ⇒ clear the alert latch so a later failure re-alerts on entry.
         state.pop("calendar_alert_date", None)
+        # Proactively confirm the week's plan whenever it CHANGES (§8.12) — so
+        # calendar mode isn't silent about what it intends to book.
+        _maybe_calendar_preview(state, source, prefs, tg,
+                                today, today + dt.timedelta(days=7))
 
     plan = plan_cycle(slots_by_centre, prefs, state["slots"], bookings,
                       activity_matches, now, court_matches, source=source)
