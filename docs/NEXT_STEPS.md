@@ -6,10 +6,16 @@ _Last updated: 2026-07-27. For how to run it and the operational gotchas see
 ## ⏭️ CURRENT STATE 2026-07-30 — calendar mode live, catcher session-bug fixed (still dry-run)
 
 All three tennisbot services run on the homelab, healthy, **DRY-RUN** (both live
-flags off): `tennisbot-catch` on **`:0.7.1`**, `tennisbot-drop` + `tennisbot-prefs`
+flags off): `tennisbot-catch` on **`:0.7.2`**, `tennisbot-drop` + `tennisbot-prefs`
 on **`:0.7.0`**. Config is now `mode: calendar` (set from Telegram 29 Jul) — a
 dedicated iCloud "Tennis" calendar drives booking; one shared Telegram-set
 `prefs.json` governs both bookers.
+
+- **📅 Calendar plan preview (0.7.2, ARCH §8.12).** In calendar mode the catcher
+  now Telegrams a ranked "Calendar plan" for the coming week whenever it CHANGES
+  (entering calendar mode, an edited event, the rolling horizon) — so you always
+  know what it intends to book; empty calendar → one "no events" notice. Verified
+  live: it read the real calendar and sent Sat 1 / Wed 5 / Thu 6 Aug.
 
 - **⚠️ Fixed 2026-07-30 — the catcher was silently dead for 3 days.** It logged
   in once and never re-authenticated, so once the EA session lapsed every 30-min
