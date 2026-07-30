@@ -506,8 +506,7 @@ class _PlaywrightScanner:
 
     def _ensure_session(self):
         from playwright.sync_api import sync_playwright
-        from .providers.everyoneactive import (EveryoneActiveProvider,
-                                               make_context)
+        from .providers.everyoneactive import make_context
         if self._p is None:
             self._p = sync_playwright().start()
         if self._browser is None:
@@ -515,12 +514,48 @@ class _PlaywrightScanner:
             self._page = self._ctx.new_page()
             self._session_ready = False
         if not self._session_ready:
-            # Session is account-wide; any target's provider can establish it.
-            any_target = next(iter(self.targets.values()))
-            prov = EveryoneActiveProvider(self.secrets, any_target)
+            # First establishment for this browser: account-SPA cookies + Connect.
+            self._establish_session(full=True)
+            return
+        # Reused across cycles. The Connect cookie expires after a few hours, so a
+        # daemon that logs in ONCE and then only navigates (`go_home`) bounces to
+        # MRMLogin forever — the failure mode that silently killed every cycle for
+        # 3 days (2026-07-27→30). Cheaply re-affirm the session each cycle and
+        # re-auth when it has lapsed, exactly like the nightly drop does.
+        if not self._connect_live():
+            log.info("catcher.session_reauth")
+            self._establish_session(full=False)
+
+    def _establish_session(self, *, full: bool) -> None:
+        """(Re)establish the account-wide EA session on the current page.
+
+        `full=True` (first time) also seeds account-level cookies via the flaky
+        account SPA (`start_session`). The heal path (`full=False`) skips it and
+        relies on `enter_connect`, which — when the Connect cookie is gone — logs
+        in directly on MRMLogin (email+password), independent of that SPA. That is
+        the robust primary path (CLAUDE.md), so a re-auth never depends on the
+        surface most likely to be throttled."""
+        from .providers.everyoneactive import EveryoneActiveProvider
+        any_target = next(iter(self.targets.values()))
+        prov = EveryoneActiveProvider(self.secrets, any_target)
+        if full:
             prov.start_session(self._ctx, self._page)
-            prov.enter_connect(self._page, self._ctx)
-            self._session_ready = True
+        prov.enter_connect(self._page, self._ctx)
+        self._session_ready = True
+
+    def _connect_live(self) -> bool:
+        """Liveness probe: is the Connect search home still reachable, or has the
+        session expired and bounced us to MRMLogin? Run once per cycle so a
+        days-long daemon re-auths instead of failing forever on a stale cookie.
+        A True result also leaves the page on the search home, ready to scan."""
+        from .providers.everyoneactive import EveryoneActiveProvider
+        try:
+            self._page.goto(EveryoneActiveProvider.HOME_URL,
+                            wait_until="domcontentloaded", timeout=60000)
+            self._page.wait_for_timeout(1000)
+            return "memberHomePage" in self._page.url
+        except Exception:
+            return False
 
     def scan(self, prefs) -> dict[str, list[WeekSlot]]:
         """~1 search + ≤2 grid opens per centre (§8.2): a ranged search of the
