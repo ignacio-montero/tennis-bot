@@ -4,7 +4,7 @@ Notable decisions and their rationale, roughly chronological. Fuller
 discussion of the architectural ones lives in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
-- **Hold-and-notify MVP** — the bot stops at Everyone Active's unpaid 1-hour
+- **Hold-and-notify MVP** — the bot stops at the provider's unpaid 1-hour
   hold and the user pays in the app. Removes payment/3DS/SCA/PCI from scope
   entirely while keeping the time-critical part (winning the slot) automated.
 - **Personal use only, polite client** — own bookings under own account, rate
@@ -13,7 +13,7 @@ discussion of the architectural ones lives in
   escalate to a human via Telegram.
 - **Hybrid "session-harvest" connectivity model** — Playwright does what only
   a browser can (anti-bot, login), then the harvested session can drive fast
-  raw-HTTP calls. In practice Everyone Active's WebForms stack proved too
+  raw-HTTP calls. In practice the provider's WebForms stack proved too
   fragile for raw httpx replay, so the **hot path stays on Playwright** for
   now; a raw-postback fast path is a possible later optimisation (BACKLOG §1).
 - **Fail safe, fail loud** — every run reports to Telegram; a silent failure
@@ -79,16 +79,17 @@ discussion of the architectural ones lives in
   enough to unseat the two clean confirmations, but the reason watchd stays
   running as a sentinel past the first live drop rather than being retired
   immediately.
-- **<redacted> <redacted> (2026-07-16, deliberate)** — decided not to
-  <redacted> despite it being <redacted>
-  setup; accepted as-is. (Telegram token was rotated ✅.) `.env` stays
-  gitignored, launchd plists committed as `__PROJECT_DIR__` templates rendered
-  at install, staged-secret scan before every push.
+- **Secret-handling posture (2026-07-16)** — all credentials live in a
+  gitignored `.env` and are never committed; `.env.example` carries names and
+  placeholders only. launchd plists are committed as `__PROJECT_DIR__`
+  templates rendered at install time, so no local paths leak. A staged-secret
+  scan runs before every push. Rotation status for individual credentials is
+  tracked privately rather than in this repo.
 - **Court-drop trigger = self-scheduling sidecar, not host cron
   (2026-07-22, supersedes the 0.2.x cron rehearsal)** — the nightly booker runs
   as a long-running `drop-loop` container (`restart: unless-stopped`) that
   sleeps to ~00:00−lead, books once, and loops. Replaces the earlier
-  cron-fired one-shot (`run-drop.sh` + nacho's crontab + external watchd
+  cron-fired one-shot (`run-drop.sh` + the host user's crontab + external watchd
   stop/start). Chosen because it (a) needs **no Docker socket and no host
   crontab** — deploys with the same `docker compose up -d` as watchd, no extra
   privilege; and (b) is **TZ-aware (`Europe/London`) so it needs no DST

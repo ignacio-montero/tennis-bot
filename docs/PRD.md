@@ -30,7 +30,7 @@ generate. Shared publicly only as a portfolio piece.
 ## Target venues
 
 - **Paddington Recreation Ground** and **Westway Sports Centre** — *Everyone
-  Active* (Gladstone MRM/Connect backend). ✅ Implemented; any other EA centre
+  Active* (legacy WebForms booking backend). ✅ Implemented; any other EA centre
   is config-only.
 - **Hyde Park** & **Regent's Park** — *Park Sports* (custom web platform).
   Deferred from MVP.

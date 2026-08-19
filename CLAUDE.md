@@ -157,10 +157,10 @@ an injectable `_PlaywrightScanner`. Inherits the drop's blackouts (§8.4). State
   13:00/14:30).
 
 ## Secrets
-`.env` (gitignored): `EA_EMAIL`, `EA_PASSWORD`, `TELEGRAM_BOT_TOKEN`,
-`TELEGRAM_CHAT_ID`. Telegram token rotated ✅. <redacted>
-<redacted> (decided 2026-07-16) — accepted as-is despite <redacted>
-share; not a pending task.
+`.env` (gitignored): provider credentials + `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_CHAT_ID`. Never commit values; `.env.example` carries names and
+placeholders only. Credential rotation status is tracked privately, not here —
+a public repo should never state which of its credentials are or aren't current.
 
 ## Automation — activity booking (LIVE, scheduled) ✅
 Four `launchd` jobs book the Paddington "Tennis (adv)" activities 7 days ahead:
@@ -192,16 +192,16 @@ open within ~20 s of midnight; see DECISIONS.md).
 - **Runs as the `tennisbot-drop` sidecar** — `tennisbot drop-loop`, a
   long-running container (`restart: unless-stopped`) that sleeps to ~00:00−lead,
   books once, and loops. **Replaced the earlier cron rehearsal** (`run-drop.sh` +
-  nacho's crontab): no host cron, no Docker socket, TZ-aware so no DST edits;
+  the host user's crontab): no host cron, no Docker socket, TZ-aware so no DST edits;
   deploys with the same `docker compose up -d` as watchd. The one-session rule is
   the watchd **23:53–00:07 in-image blackout** (0.3.0), not an external
   stop/start. **Dry-run** (`--after 19:00`, no `--live`) — add `--live` to the
   compose command to book. Merged + deployed 2026-07-23 (tennis-bot PR #2,
   homelab PR #1); runbook in `deploy/docker/DROP.md`. Container
   `tennisbot-drop`, image **:0.3.1**, no ports, `restart: unless-stopped`.
-  Check it: `ssh homelab 'docker logs --tail 20 tennisbot-drop'` — a
+  Check it: `ssh <host> 'docker logs --tail 20 tennisbot-drop'` — a
   `drop_loop.sleep` line naming the next drop date means it's healthy.
-  ⚠️ `ssh homelab` is the LAN address; use **`ssh homelab-ts`** (tailnet) when
+  ⚠️ the plain SSH alias is the LAN address; use the tailnet alias when
   away from the home network.
 - **Failure diagnosis (0.3.1, 2026-07-23):** a drop that secures nothing now
   reports WHY — `never_opened` (release didn't happen → the drop time may have
@@ -253,10 +253,10 @@ flipped open between 23:59:40 and 00:19:40 → midnight-D7 theory.**
   `mcr.microsoft.com/playwright/python:v1.60.0-noble`; playwright **pinned
   1.60.0** in requirements.txt — bump both together.
 - Compose lives in the homelab repo
-  (`~/Development/homelab/services/tennisbot-watchd/`); observations at
+  (`<infra-repo>/services/tennisbot-watchd/`); observations at
   `/data/watchd/observations.jsonl` + `bracket.json` in volume
   `tennisbot-watchd-state`; EA session in `tennisbot-watchd-session`.
-- Check on it: `ssh homelab 'docker logs tennisbot-watchd --tail 20'`.
+- Check on it: `ssh <host> 'docker logs tennisbot-watchd --tail 20'`.
 - ⚠️ One-session rule: the daemon and the Mac's activity jobs share the EA
   account; blackouts cover the job times — don't run manual sessions during
   hot windows.

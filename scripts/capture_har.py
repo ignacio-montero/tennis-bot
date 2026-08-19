@@ -46,10 +46,21 @@ SENSITIVE_HEADERS = {
     "x-csrf-token", "x-xsrf-token", "x-auth-token", "x-api-key", "api-key",
 }
 # Substrings that mark a header/field name as sensitive.
+# NOTE: this is a BLOCKLIST, and blocklists fail open — any field name not
+# listed here is emitted in the clear. Personal fields (firstName, birthDate,
+# postcode, mobile, address...) were originally missing and leaked into
+# recon/out/. They are covered now, but the model is still "deny what we
+# thought of", not "allow only what we vetted". Treat the output as SENSITIVE
+# regardless of what this list says, and never commit it.
 SENSITIVE_NAME_HINTS = (
     "token", "secret", "password", "passwd", "auth", "session", "cookie",
     "csrf", "xsrf", "card", "cvv", "cvc", "pan", "cardnumber", "securitycode",
     "apikey", "api_key", "bearer", "signature",
+    # personal data
+    "name", "firstname", "lastname", "surname", "email", "phone", "mobile",
+    "telephone", "address", "postcode", "postalcode", "zip", "birth", "dob",
+    "dateofbirth", "gender", "nationality", "identity", "identityid",
+    "membership", "memberid", "customer", "account", "user",
 )
 
 # Only these MIME types are worth dumping as bodies.
@@ -78,9 +89,10 @@ def redact_value(value: str, redact: bool) -> str:
     if value is None:
         return ""
     v = str(value)
-    if len(v) <= 8:
-        return "***REDACTED***"
-    return f"***REDACTED*** (len={len(v)}, starts='{v[:4]}…')"
+    # Deliberately reveal NOTHING about the value — not its prefix, not its
+    # exact length. A 4-char prefix plus an exact length is a meaningful
+    # entropy reduction for a human-chosen password.
+    return "***REDACTED***"
 
 
 def looks_boring(url: str, mime: str) -> bool:
@@ -317,7 +329,10 @@ def main() -> int:
             print(f"    {host}  ({count})")
 
     if redact:
-        print("\nRedaction was ON. Safe to skim, but still don't commit recon/out/.")
+        print("\n⚠  Redaction was ON, but it is BEST-EFFORT ONLY — it hides fields whose\n"
+              "   NAMES look sensitive, so any field it didn't anticipate is in the clear.\n"
+              "   Non-JSON bodies (e.g. HTML pages, binary/base64 payloads) are emitted raw.\n"
+              "   Treat recon/out/ as containing personal data. Never commit it.")
     else:
         print("\n⚠  Redaction was OFF — output contains live secrets. Handle carefully.")
     return 0

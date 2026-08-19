@@ -113,7 +113,7 @@ The rehearsal notes below stay as booking-behaviour reference.
    not a blocker.
    **Graduation path (once unblocked):**
    a. Watch 1–2 nights of the 00:41 dry-run via Telegram `🎾 DRY-RUN` or
-      `ssh homelab 'tail ~/homelab/services/tennisbot-drop/logs/cron.log'`.
+      `ssh <host> 'tail <infra-repo>/services/tennisbot-drop/logs/cron.log'`.
       Expect a "would book 19:00+" (the 2026-07-22 run already produced one).
       ⚠️ **Known gap:** `drop-outcomes.jsonl` is NOT actually being written —
       the `tennisbot-drop-state` volume is empty despite `drop.result` logging.
@@ -137,5 +137,5 @@ The rehearsal notes below stay as booking-behaviour reference.
 
 - At T-0 the browser flow takes ~10–15s (search→parse→click). Fine unless the
   drop is fiercely contested; fast-path optimisations are parked in BACKLOG §1.
-- Gladstone/EA WebForms is the brittle end of the integration — expect
+- the provider's WebForms is the brittle end of the integration — expect
   selector/flow maintenance (see CLAUDE.md gotchas).

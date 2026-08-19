@@ -45,7 +45,7 @@ sender (any other chat id is ignored).
 
 ## 3. Background the design must honour (validated 2026-07-23)
 
-A live read-only probe of Everyone Active settled the key unknowns — the design
+A live read-only probe of the booking provider settled the key unknowns — the design
 must build on these facts, not re-litigate them:
 
 - **The EA search form filters by day and time natively** (`Include Days`

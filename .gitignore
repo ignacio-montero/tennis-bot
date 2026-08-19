@@ -47,3 +47,6 @@ logs/
 .DS_Store
 .idea/
 .vscode/
+
+# Detailed provider recon — kept local, never published.
+recon/FINDINGS.local.md

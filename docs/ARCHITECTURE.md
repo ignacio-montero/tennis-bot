@@ -5,9 +5,9 @@
 >
 > **Targets**
 > - **Hyde Park** & **Regent's Park** — *Park Sports* (custom web platform)
-> - **Paddington Recreation Ground** — *Everyone Active* (Gladstone MRM backend)
+> - **Paddington Recreation Ground** — the booking provider (legacy WebForms booking backend)
 >
-> **Status (2026-06-28):** IMPLEMENTED for Everyone Active. `run-now` CLI books
+> **Status (2026-06-28):** IMPLEMENTED for the booking provider. `run-now` CLI books
 > courts (Paddington + Westway, surface preference, optional 2 consecutive hours)
 > and activities, **hold-and-notify** (unpaid 1-hour hold → Telegram → user pays
 > in the app; payment/3DS out of scope). **Activity booking is automated** via 4
@@ -79,8 +79,8 @@ Playwright (slow, robust)            httpx (fast, lean)
   Playwright only to bootstrap/refresh the session. **This is where we win the
   millisecond race.**
 
-- **Everyone Active / Gladstone MRM (Paddington)** — *Browser-first, then
-  harvest.* Gladstone's "MRM"/"Connect" stack is a legacy, server-rendered
+- **the booking provider (Paddington)** — *Browser-first, then
+  harvest.* the provider's legacy booking stack is a legacy, server-rendered
   app (ASP.NET-style postbacks, hidden form tokens, sometimes `__VIEWSTATE`,
   stateful multi-step flows). Its protocol is fragile and tightly coupled to
   the rendered page. Start by driving it with Playwright end-to-end; once the
@@ -207,9 +207,9 @@ T+...    : NOTIFIER reports result (or escalates SCA to human)
 - **Success:** "✅ Booked Hyde Park, Court 2, Sat 5 Jul 18:00–19:00. Ref #…".
 - **Failure:** reason + what was tried (audit-grade, so we can tune).
 - **HITL for SCA (see §4.3):** when a 3DS challenge appears, the bot pushes an
-  alert with an inline **"Approve / I've completed it"** button and, if needed,
-  a field to relay a one-time passcode — so you finish the bank step on your
-  phone in seconds while the bot holds the slot.
+  alert with an inline **"I've completed it"** button — you complete the bank
+  step yourself, in your own banking app, while the bot holds the slot. The bot
+  never handles challenge codes.
 - **Heartbeat/health:** a daily "armed and ready, next drop at …" message so you
   know it's alive *before* you're relying on it.
 
@@ -222,9 +222,8 @@ T+...    : NOTIFIER reports result (or escalates SCA to human)
 | Concern | Choice | Why |
 |---|---|---|
 | Language | **Python 3.12** | Best ecosystem for both Playwright and async HTTP. |
-| Browser automation | **Playwright** (async) | More reliable than Selenium; great session/cookie control; `patchright`/stealth plugins for anti-bot. |
+| Browser automation | **Playwright** (async) | More reliable than Selenium; great session/cookie control. |
 | Fast HTTP | **httpx** (HTTP/2, async) | Connection reuse, multiplexing, fine header control for the hot path. |
-| Anti-detection | **patchright** / `playwright-stealth` | Patches the obvious automation fingerprints. |
 | Scheduling | **APScheduler** (in-proc) + **launchd/cron** (OS) | Precise inner timing + robust outer trigger. |
 | Clock | **ntplib** + server-`Date` skew correction | Fire against the server's clock. |
 | Notifications / HITL | **python-telegram-bot** | Push + interactive buttons for SCA. |
@@ -328,24 +327,19 @@ Telegram HITL flow.
 - **Token re-scrape.** CSRF/anti-forgery tokens are read fresh from the live
   page/availability response right before firing, never cached across drops.
 
-### 4.2 Cloudflare / anti-bot
+### 4.2 Being a well-behaved client
 
-- **Let a real browser do the hard part.** Playwright (with stealth/patchright)
-  clears JS challenges and managed-challenge cookies (`cf_clearance`) that raw
-  HTTP can't. We then **harvest `cf_clearance` + the matching User-Agent** and
-  reuse them on the `httpx` hot path — but **the TLS/JA3 fingerprint and the
-  User-Agent must match the browser that earned the clearance**, or Cloudflare
-  rejects it. (If JA3 matching proves necessary, swap `httpx` for a
-  fingerprint-matching client such as `curl_cffi` on that platform.)
-- **Residential IP** (your home line — the chosen free hosting) is the strongest
-  lever; datacenter IPs get challenged far harder. This is *why* we run locally
-  first.
-- **Behave human:** realistic headers, sane request cadence, per-host
-  concurrency caps, no early-firing. Don't generate traffic patterns that look
-  automated.
-- **Graceful escalation:** if a hard CAPTCHA appears that stealth can't clear,
-  fall back to **Telegram HITL** — surface it to you to solve once, then
-  continue. We do not build CAPTCHA-farm bypasses.
+- **Reuse one real browser session.** A Playwright session is established once and
+  persisted via `storage_state`, then reused. This exists to *reduce* load on the
+  provider — repeated fresh logins are the expensive, noisy pattern — not to disguise
+  anything.
+- **Polite by construction:** realistic headers, sane request cadence, per-host
+  concurrency caps, and no early firing. The bot targets a single slot for a single
+  account and stops.
+- **No circumvention.** This project does not implement, and will not implement,
+  anti-fingerprinting, challenge-solving, CAPTCHA bypass, or proxy rotation. If the
+  provider presents a challenge the session can't satisfy, the run surfaces it over
+  Telegram for a human to handle and otherwise gives up.
 
 ### 4.3 3D Secure / SCA — handled, **not bypassed**
 
@@ -354,7 +348,7 @@ Telegram HITL flow.
 > make it **rare and fast**, never to defeat it.
 
 > **MVP path — payment is fully out of scope (hold-and-notify).** On platforms
-> that support an unpaid hold (confirmed for Paddington/Everyone Active), the bot
+> that support an unpaid hold (confirmed for Paddington/the booking provider), the bot
 > stops at the hold and the user pays in the app. This removes 3DS/SCA, card
 > storage, and PCI concerns from the prototype entirely. The strategy below
 > applies only *if/when* we later automate payment, or for a platform that forces
@@ -376,7 +370,9 @@ Telegram HITL flow.
    challenge:
    - The booking engine raises `ScaRequired` while **holding the slot**.
    - The notifier fires an **instant Telegram alert** with an inline button and,
-     if it's an OTP-type challenge, a way to **relay the code** you receive.
+     you complete the challenge yourself in your banking app and tap
+     "I've completed it". The bot never sees, requests, or transports a
+     one-time passcode.
    - If it's an app-approval challenge, you tap "approve" in your banking app;
      the bot polls the payment status and **completes the booking** once cleared.
    - This keeps the hot path automated 95%+ of the time and needs you for only
@@ -427,7 +423,7 @@ attempt to forge issuer authentication. Those are fraud and we won't build them.
 
 ### Phase 1 — Single-venue happy path — **"hold-and-notify"** (Paddington first)
 > **Key MVP decision:** the bot's finish line is *securing an unpaid hold*, not
-> paying. On Everyone Active, clicking an available slot creates an unpaid
+> paying. On the booking provider, clicking an available slot creates an unpaid
 > booking that appears in the user's app; the user completes payment there in a
 > tap. This **decouples slot acquisition (time-critical, safe to automate) from
 > payment (no time pressure, sidesteps 3DS/SCA, card data, and PCI entirely)**.
@@ -454,9 +450,9 @@ attempt to forge issuer authentication. Those are fraud and we won't build them.
 - **Exit criterion:** bot reliably secures the *best available* slot, not just
   *a* slot, under contention.
 
-### Phase 4 — Everyone Active / Paddington
+### Phase 4 — the booking provider / Paddington
 - Implement `EveryoneActiveProvider` (browser-first, harvest where stable).
-- Handle Gladstone's multi-step/postback/token quirks.
+- Handle the provider's multi-step/postback/token quirks.
 - **Exit criterion:** all three venues bookable through the same engine.
 
 ### Phase 5 — Hardening & payment friction reduction
@@ -478,7 +474,7 @@ attempt to forge issuer authentication. Those are fraud and we won't build them.
 
 - **JA3/TLS fingerprinting** on the harvested-session hot path — may force
   `curl_cffi` on one or both platforms. Confirmed only after Phase 0 recon.
-- **Gladstone MRM stability** — likely the most brittle integration; budget the
+- **the legacy WebForms engine stability** — likely the most brittle integration; budget the
   most maintenance here.
 - **Frictionless-payment eligibility** is issuer-dependent — we'll learn the
   real SCA frequency only with live runs (Phase 1/5).

@@ -13,7 +13,7 @@ payment/3-D Secure entirely out of scope.
 
 ## What it does
 
-- **Books courts** at multiple Everyone Active centres (Paddington, Westway),
+- **Books courts** at multiple centres of one booking provider,
   with a configurable **surface preference** (e.g. Synth → Tarmac fallback) and
   an optional **two-consecutive-hours, same-court** mode.
 - **Books activities** (e.g. weekly "Tennis (adv)" sessions) released exactly a
@@ -120,8 +120,16 @@ Deterministic unit tests cover slot-selection logic and the timing math (no netw
 
 ## Disclaimer
 
-Personal, educational automation for booking my own court under my own account.
-It does not bypass payment or authentication (3-D Secure is intentionally out of
-scope — a human pays in the app), creates no more load than a person would, and
-respects rate limits. Use against any service is your responsibility and subject
-to that service's terms.
+**This repository is published as an engineering artefact — a portfolio piece —
+and is not intended for use against any third-party service.** The booking
+provider is deliberately not named, and the concrete integration details
+(hostnames, endpoints, control ids, activity codes) have been removed.
+
+It automates booking *my own* court under *my own* account. It does not bypass
+payment or authentication — 3-D Secure is intentionally out of scope and a human
+pays in the provider's own app. It implements no anti-fingerprinting, no
+challenge-solving, no CAPTCHA bypass and no proxy rotation, and it creates no
+more load than a person clicking the same buttons would.
+
+If you fork or adapt it, complying with the target service's terms is entirely
+your responsibility.

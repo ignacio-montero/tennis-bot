@@ -21,7 +21,11 @@ cookies, and anything you type into a form (including card details).
 - **Never paste a HAR into chat or commit it to git.** `.gitignore` already
   blocks `*.har`. Just leave the files in this `recon/` folder.
 - The parser redacts cookies/tokens/passwords/card fields in its output by
-  default.
+  default — but that redaction is **best-effort, not a guarantee**. It hides
+  fields whose *names* look sensitive, so anything it didn't anticipate comes
+  through in the clear, and non-JSON bodies (HTML pages, base64 payloads) are
+  emitted raw. Treat `recon/out/` as containing your personal data and keep it
+  out of git like the HARs themselves.
 
 ---
 
@@ -93,8 +97,10 @@ reserve flow.
 
 - **"No .har files found"** → the file didn't save here, or didn't end in
   `.har`. Check the path.
-- **Almost no requests kept** → the site may render server-side (likely for
-  Everyone Active/Gladstone). That's fine and expected — it tells us that
+- **Almost no requests kept** → the site may render server-side (likely for a
+  legacy WebForms booking engine). That's fine and expected — it tells us that
   platform leans browser-automation, not JSON API. Capture it anyway.
-- **Worried about a secret leaking** → redaction is on by default; only
-  `--no-redact` disables it, and we never use that.
+- **Worried about a secret leaking** → redaction is on by default and
+  `--no-redact` is never used — but do not treat "redacted" as "safe to share".
+  Both `recon/out/` and `*.har` are gitignored; leave them that way, and prefer
+  storing them outside the repo tree entirely.

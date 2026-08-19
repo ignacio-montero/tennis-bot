@@ -73,11 +73,11 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   `preferred`/`enabled`. Other court types addable the same way.
 
 ## 3. New venues
-- ✅ **Other Everyone Active centres** *(user idea #1)* — Westway (`0162`) added;
+- ✅ **Other the booking provider centres** *(user idea #1)* — Westway (`0162`) added;
   any centre is now config-only (`site` + group + surfaces). Use
   `python -m tennisbot discover --centre NAME` to find codes.
 - 🔵 **Hyde Park & Regent's Park (Park Sports)** — recon + provider. Expected to
-  be a clean JSON API (unlike Gladstone). Deferred from MVP.
+  be a clean JSON API (unlike the legacy WebForms engine). Deferred from MVP.
 
 ## 4. Reliability & politeness
 - 🔵 **Verify Manage-Bookings court text carries a surface token before
@@ -164,8 +164,8 @@ activity & 2-hour *live* hold paths still need one `--live` confirmation.
   Neither over-books; expand if a real calendar needs them.
 
 ## 9. Housekeeping
-- 🟡 **Rotate secrets** — Telegram token ✅ rotated; **<removed>**
-  (<removed>).
+- 🟡 **Credential rotation** — tracked privately; deliberately not itemised in
+  a public repo.
 - ✅ **Published to GitHub** — private repo `ignacio-montero/tennis-bot` (branch
   `main`), secrets verified excluded, README + LICENSE + genericized paths.
 - ⚪ **Tests** — more provider-parsing unit tests, mocked flows (have: selection
